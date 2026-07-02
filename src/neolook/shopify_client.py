@@ -103,9 +103,16 @@ class ShopifyClient:
                 "X-Shopify-Access-Token": token,
                 "Content-Type": "application/json",
             }
-            response = await self._http.post(
-                url, headers=headers, json={"query": query, "variables": variables or {}}
-            )
+            try:
+                response = await self._http.post(
+                    url, headers=headers, json={"query": query, "variables": variables or {}}
+                )
+            except httpx.TransportError as e:
+                if attempt == MAX_RETRIES:
+                    raise ShopifyAPIError(f"Network error after {MAX_RETRIES} retries: {e}") from e
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                continue
 
             if response.status_code >= 500:
                 if attempt == MAX_RETRIES:

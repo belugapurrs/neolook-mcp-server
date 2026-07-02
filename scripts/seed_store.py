@@ -357,6 +357,9 @@ class Seeder:
                     console.print(f"[red]Failed to create order {i}: {e}[/red]")
                 progress.advance(task)
 
+                if (i + 1) % 25 == 0:
+                    self.write_manifest()
+
     def write_manifest(self) -> None:
         MANIFEST_PATH.write_text(json.dumps({"generated_at": datetime.now(timezone.utc).isoformat(), "orders": self.manifest}, indent=2))
         console.print(f"[green]Wrote {len(self.manifest)} order records to {MANIFEST_PATH}[/green]")
@@ -377,8 +380,10 @@ class Seeder:
             console.print("[red]No customers were created - aborting order creation.[/red]")
             return
 
-        await self.create_orders()
-        self.write_manifest()
+        try:
+            await self.create_orders()
+        finally:
+            self.write_manifest()
 
         console.print("\n[bold green]Seeding complete.[/bold green]")
         console.print(f"  Collections: {len(self.collections)}")
