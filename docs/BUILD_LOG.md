@@ -164,3 +164,35 @@ actually the order's *display number* (shown as `#1009`), and needed to be
 looked up by name instead. The automated test caught this before it ever
 ran against the live store - a good example of why we write tests even on
 a project this size.
+
+---
+
+## Phase 4.5 — Debugging the `read_all_orders` permission (2026-07-02/03)
+
+**What happened:** We decided to request the `read_all_orders` scope so
+analytics could look back 120 days instead of the default 60. Even after
+releasing a new app version with that scope in the Dev Dashboard, a
+freshly-fetched access token kept coming back *without* it - across several
+minutes of polling and even after double-checking Client ID/Secret in
+`.env`.
+
+**Root cause:** Releasing a new app version with an added scope isn't the
+final step. The Shopify *store* itself has to separately approve the
+permission change - this shows up as a pending "Updated app permissions"
+approval in the store's app history, distinct from the developer-side
+"release a version" action. Until the merchant (in this case, also us,
+wearing the store-owner hat) explicitly accepts that prompt, the new scope
+is not actually granted, no matter how long you wait.
+
+**Why this is worth remembering:** This is a good real-world lesson in how
+permission systems for third-party apps work: the *developer* defines what
+permissions an app wants, but the *store* must separately consent to them,
+similar to how installing an app on your phone shows you a permissions
+prompt even though the developer already declared what it needs in their
+app manifest. Good story for an interview: "I chased what looked like a
+propagation delay for several minutes, methodically ruled out caching and
+credential mismatches, and traced it to a merchant-side consent step that's
+easy to miss in Shopify's newer Dev Dashboard flow."
+
+**Confirmed fixed:** A fresh token now includes `read_all_orders` in its
+scope list. We're proceeding with the full 120-day seed data plan.
