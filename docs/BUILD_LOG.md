@@ -73,3 +73,53 @@ We confirmed the exact technical details on Shopify's official docs
   "get me a valid token, refreshing automatically if it's expired or about
   to expire" helper, so every tool we write later doesn't have to think
   about token expiry at all.
+
+**Confirmed working:** `python scripts/ping.py` successfully exchanged the
+Client ID/Secret for an access token and connected to the store
+`nishka-practice-mcp`. Auth is solved end-to-end.
+
+---
+
+## Phase 3 — The shared Shopify client + caching layer (2026-07-02)
+
+**What we built:** Two files that every tool we write from now on will
+share, instead of each tool re-implementing the same logic:
+
+- `src/neolook/cache.py` — a short-term memory for read requests. If a tool
+  asks Shopify "what are the top products?" and then 30 seconds later
+  another tool asks the same question, we hand back the remembered answer
+  instead of asking Shopify again. Each type of data (products, orders,
+  customers, etc.) has its own separate memory bucket ("namespace"), so
+  that when we *change* something (like updating a product), we only need
+  to clear that one bucket instead of forgetting everything.
+- `src/neolook/shopify_client.py` — the single "phone line" to Shopify. It:
+  1. Automatically fetches a fresh access token and reuses it until it's
+     about to expire (handling the 24-hour Dev Dashboard token flow from
+     Phase 1.5) so no other code has to think about tokens.
+  2. Routes every read through the cache from step above.
+  3. Politely backs off if Shopify says "you're calling too fast"
+     (Shopify's API has a budget system — each request costs "points," and
+     if we run low, we wait the right number of seconds before retrying,
+     up to 3 attempts).
+  4. Keeps running counts of: how many requests our code *wanted* to make,
+     how many actually went out to Shopify, and how many were answered from
+     the cache instead. This is the exact data we'll use later to prove the
+     "caching cuts API traffic by X%" resume claim — with real numbers, not
+     a guess.
+
+**Why:** Instead of scattering "call Shopify," "cache the result," and
+"don't call too fast" logic across 18 different tools, we wrote it once
+here. Every tool we add later becomes a thin, easy-to-read wrapper around
+this client.
+
+**Testing:** We wrote 4 automated tests (`tests/test_shopify_client.py`)
+that fake Shopify's responses (no real store or token needed to run them)
+and check: the token is fetched once and reused, repeated reads are served
+from cache instead of hitting the network twice, a write (mutation) clears
+the right cache bucket, and a simulated "too fast" response is retried
+correctly. All 4 pass. Run them yourself anytime with:
+
+```bash
+source .venv/bin/activate
+python -m pytest tests/ -v
+```
