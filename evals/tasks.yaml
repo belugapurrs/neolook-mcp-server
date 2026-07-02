@@ -1,0 +1,187 @@
+# 24 natural-language tasks used to measure the agent's task-success rate.
+# Each task's `checks` are machine-verifiable assertions run against the
+# live store after the agent finishes - never scored by "did it look right."
+
+- id: disc-01
+  category: discount
+  prompt: "Create a 15% discount code called EVALSUMMER15 for orders over $100, valid for the next 7 days."
+  checks:
+    - type: discount_exists
+      code: EVALSUMMER15
+      percentage: 15
+      min_purchase: 100
+
+- id: disc-02
+  category: discount
+  prompt: "Create a 20% off discount code called EVALFLASH20 with no minimum purchase requirement, starting today."
+  checks:
+    - type: discount_exists
+      code: EVALFLASH20
+      percentage: 20
+
+- id: disc-03
+  category: discount
+  prompt: "Create a 10% discount code EVALWELCOME10 for first-time customers spending at least $50, valid for 14 days."
+  checks:
+    - type: discount_exists
+      code: EVALWELCOME10
+      percentage: 10
+      min_purchase: 50
+
+- id: checkout-01
+  category: checkout
+  prompt: "Create a payable checkout link for 2 units of one of my products (pick any in-stock product) so I can send it to a customer."
+  checks:
+    - type: checkout_link_created
+
+- id: checkout-02
+  category: checkout
+  prompt: "Create a checkout link for a customer named test-eval@example.com buying 1 unit of any product, and apply a 10% discount if one exists."
+  checks:
+    - type: checkout_link_created
+      customer_email: test-eval@example.com
+
+- id: checkout-03
+  category: checkout
+  prompt: "A customer wants to buy 3 different products, 1 unit each. Find 3 in-stock products and create a single checkout link for all of them."
+  checks:
+    - type: checkout_link_created
+      min_line_items: 3
+
+- id: analytics-01
+  category: analytics
+  prompt: "What was our total revenue over the last 30 days, and how many orders was that?"
+  checks:
+    - type: tool_called
+      tool: revenue_summary
+
+- id: analytics-02
+  category: analytics
+  prompt: "Show me our top 5 best-selling products by revenue over the last 60 days."
+  checks:
+    - type: tool_called
+      tool: top_products
+
+- id: analytics-03
+  category: analytics
+  prompt: "Which products are selling faster than they were a month ago?"
+  checks:
+    - type: tool_called
+      tool: sales_velocity
+
+- id: analytics-04
+  category: analytics
+  prompt: "Find products that have a lot of stock but almost no sales in the last 60 days."
+  checks:
+    - type: tool_called
+      tool: stale_inventory_report
+
+- id: analytics-05
+  category: analytics
+  prompt: "Are there any abandoned carts worth recovering right now?"
+  checks:
+    - type: tool_called
+      tool: abandoned_checkout_report
+
+- id: analytics-06
+  category: analytics
+  prompt: "How well is each of our discount codes performing? Show revenue and discount given per code."
+  checks:
+    - type: tool_called
+      tool: discount_roi
+
+- id: analytics-07
+  category: analytics
+  prompt: "What percentage of our revenue in the last 90 days came from repeat customers vs. one-time buyers?"
+  checks:
+    - type: tool_called
+      tool: customer_repeat_rate
+
+- id: analytics-08
+  category: analytics
+  prompt: "Give me pricing suggestions - which products should we consider raising prices on, and which should we discount?"
+  checks:
+    - type: tool_called
+      tool: price_optimization_suggestions
+
+- id: analytics-09
+  category: analytics
+  prompt: "How is our server-side caching performing? Show me the cache hit rate and how many requests it saved."
+  checks:
+    - type: tool_called
+      tool: get_server_metrics
+
+- id: workflow-01
+  category: workflow
+  prompt: "Find my slowest-moving products and run a 48-hour 20% flash sale on 5 of them."
+  checks:
+    - type: collection_exists_with_products
+      min_products: 5
+    - type: discount_exists_scoped_to_collection
+      percentage: 20
+
+- id: workflow-02
+  category: workflow
+  prompt: "Recover any abandoned carts worth at least $75 by creating a 10% off recovery discount code and drafting outreach emails."
+  checks:
+    - type: tool_called
+      tool: recover_abandoned_carts
+
+- id: workflow-03
+  category: workflow
+  prompt: "Search for products with 'Mug' in the title, then update the first result's status to ACTIVE if it isn't already."
+  checks:
+    - type: tool_called
+      tool: search_products
+    - type: tool_called
+      tool: update_product
+
+- id: workflow-04
+  category: workflow
+  prompt: "Look up order #1001 and tell me its financial status and total price."
+  checks:
+    - type: tool_called
+      tool: get_order
+
+- id: workflow-05
+  category: workflow
+  prompt: "List my 10 most recent orders."
+  checks:
+    - type: tool_called
+      tool: list_orders
+
+- id: workflow-06
+  category: workflow
+  prompt: "Reduce the inventory of one in-stock product by 1 unit (simulating a manual sale), and tell me the new quantity."
+  checks:
+    - type: tool_called
+      tool: adjust_inventory
+
+- id: workflow-07
+  category: workflow
+  prompt: "Run a full store health check: revenue in the last 30 days, top 3 products, and current cache hit rate, summarized in one report."
+  checks:
+    - type: tool_called
+      tool: revenue_summary
+    - type: tool_called
+      tool: top_products
+    - type: tool_called
+      tool: get_server_metrics
+
+- id: workflow-08
+  category: workflow
+  prompt: "Identify our 3 stalest products and create a 15% discount code scoped to just those products' collection, valid for 72 hours - but don't create it if fewer than 3 qualify."
+  checks:
+    - type: collection_exists_with_products
+      min_products: 3
+    - type: discount_exists_scoped_to_collection
+      percentage: 15
+
+- id: workflow-09
+  category: workflow
+  prompt: "A VIP customer's cart (over $100) was abandoned. Find it, recover it with a discount, and create a direct checkout link they can use instead if they'd rather just buy now."
+  checks:
+    - type: tool_called
+      tool: recover_abandoned_carts
+    - type: tool_called
+      tool: create_checkout_link
