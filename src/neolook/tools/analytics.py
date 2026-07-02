@@ -85,77 +85,7 @@ def register(mcp: FastMCP, client: ShopifyClient) -> None:
     )
     async def abandoned_checkout_report(min_value: float = 0, days: int = 30) -> dict[str, Any]:
         try:
-            body = await client.query(
-                """
-                query AbandonedCheckouts($first: Int!) {
-                  abandonedCheckouts(first: $first, sortKey: CREATED_AT, reverse: true) {
-                    nodes {
-                      id createdAt
-                      totalPriceSet { shopMoney { amount currencyCode } }
-                      customer { id displayName }
-                      abandonedCheckoutUrl
-                      lineItems(first: 10) { edges { node { title quantity } } }
-                    }
-                  }
-                }
-                """,
-                {"first": 50},
-                namespace="orders",
-            )
-            nodes = body["data"]["abandonedCheckouts"]["nodes"]
-            checkouts = [
-                {
-                    "id": n["id"],
-                    "created_at": n["createdAt"],
-                    "value": float(n["totalPriceSet"]["shopMoney"]["amount"]),
-                    "customer": (n.get("customer") or {}).get("displayName"),
-                    "recovery_url": n["abandonedCheckoutUrl"],
-                    "line_items": [e["node"] for e in n["lineItems"]["edges"]],
-                }
-                for n in nodes
-                if float(n["totalPriceSet"]["shopMoney"]["amount"]) >= min_value
-            ]
-            if checkouts:
-                return {"source": "abandoned_checkouts", "checkouts": checkouts, "count": len(checkouts)}
-
-            # Fallback: no real abandoned checkouts exist (typical on a dev store).
-            body = await client.query(
-                """
-                query OpenDraftOrders($first: Int!) {
-                  draftOrders(first: $first, query: "status:open", sortKey: UPDATED_AT, reverse: true) {
-                    edges { node {
-                      id name createdAt
-                      totalPriceSet { shopMoney { amount currencyCode } }
-                      customer { id displayName }
-                      invoiceUrl
-                      lineItems(first: 10) { edges { node { title quantity } } }
-                    } }
-                  }
-                }
-                """,
-                {"first": 50},
-                namespace="orders",
-            )
-            edges = body["data"]["draftOrders"]["edges"]
-            drafts = [
-                {
-                    "id": e["node"]["id"],
-                    "name": e["node"]["name"],
-                    "created_at": e["node"]["createdAt"],
-                    "value": float(e["node"]["totalPriceSet"]["shopMoney"]["amount"]),
-                    "customer": (e["node"].get("customer") or {}).get("displayName"),
-                    "recovery_url": e["node"]["invoiceUrl"],
-                    "line_items": [x["node"] for x in e["node"]["lineItems"]["edges"]],
-                }
-                for e in edges
-                if float(e["node"]["totalPriceSet"]["shopMoney"]["amount"]) >= min_value
-            ]
-            return {
-                "source": "open_draft_orders_fallback",
-                "note": "No real abandoned checkouts found (expected on a dev store with no live shoppers). Showing open/incomplete draft orders as a stand-in signal instead.",
-                "checkouts": drafts,
-                "count": len(drafts),
-            }
+            return await engine.fetch_cart_recovery_candidates(client, min_value, days)
         except ShopifyAPIError as e:
             return {"error": str(e)}
 

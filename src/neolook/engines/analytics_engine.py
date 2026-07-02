@@ -229,9 +229,14 @@ def stale_inventory_report(products_df: pd.DataFrame, items_df: pd.DataFrame, ma
     products_df = products_df.copy()
     products_df["units_sold"] = products_df["product_id"].map(sold).fillna(0).astype(int)
     stale = products_df[(products_df["units_sold"] <= max_units_sold) & (products_df["total_inventory"] > 0)]
-    stale = stale.sort_values("total_inventory", ascending=False)
+    stale = stale.sort_values(["units_sold", "total_inventory"], ascending=[True, False])
     return [
-        {"product_title": row["product_title"], "units_in_stock": int(row["total_inventory"]), "units_sold_in_window": int(row["units_sold"])}
+        {
+            "product_id": row["product_id"],
+            "product_title": row["product_title"],
+            "units_in_stock": int(row["total_inventory"]),
+            "units_sold_in_window": int(row["units_sold"]),
+        }
         for _, row in stale.iterrows()
     ]
 
@@ -260,6 +265,85 @@ def discount_roi(orders_df: pd.DataFrame) -> list[dict[str, Any]]:
         )
     results.sort(key=lambda r: r["revenue"], reverse=True)
     return results
+
+
+ABANDONED_CHECKOUTS_QUERY = """
+query AbandonedCheckouts($first: Int!) {
+  abandonedCheckouts(first: $first, sortKey: CREATED_AT, reverse: true) {
+    nodes {
+      id createdAt
+      totalPriceSet { shopMoney { amount currencyCode } }
+      customer { id displayName defaultEmailAddress { emailAddress } }
+      abandonedCheckoutUrl
+      lineItems(first: 10) { edges { node { title quantity } } }
+    }
+  }
+}
+"""
+
+OPEN_DRAFT_ORDERS_QUERY = """
+query OpenDraftOrders($first: Int!) {
+  draftOrders(first: $first, query: "status:open", sortKey: UPDATED_AT, reverse: true) {
+    edges { node {
+      id name createdAt
+      totalPriceSet { shopMoney { amount currencyCode } }
+      customer { id displayName defaultEmailAddress { emailAddress } }
+      invoiceUrl
+      lineItems(first: 10) { edges { node { title quantity } } }
+    } }
+  }
+}
+"""
+
+
+async def fetch_cart_recovery_candidates(client: ShopifyClient, min_value: float, days: int) -> dict[str, Any]:
+    """Returns {source, checkouts, count}. Prefers real abandoned checkouts;
+    falls back to open (incomplete) draft orders when none exist - which is
+    the normal case on a dev store, since abandoned checkouts can only be
+    created by an actual customer leaving checkout mid-flow, and there's no
+    API to fabricate one. See module docstring / docs/BUILD_LOG.md."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    body = await client.query(ABANDONED_CHECKOUTS_QUERY, {"first": 50}, namespace="orders")
+    checkouts = [
+        {
+            "id": n["id"],
+            "created_at": n["createdAt"],
+            "value": _money(n["totalPriceSet"]),
+            "customer_id": (n.get("customer") or {}).get("id"),
+            "customer_name": (n.get("customer") or {}).get("displayName"),
+            "customer_email": ((n.get("customer") or {}).get("defaultEmailAddress") or {}).get("emailAddress"),
+            "recovery_url": n["abandonedCheckoutUrl"],
+            "line_items": [e["node"] for e in n["lineItems"]["edges"]],
+        }
+        for n in body["data"]["abandonedCheckouts"]["nodes"]
+        if _money(n["totalPriceSet"]) >= min_value and _parse_dt(n["createdAt"]) >= cutoff
+    ]
+    if checkouts:
+        return {"source": "abandoned_checkouts", "checkouts": checkouts, "count": len(checkouts)}
+
+    body = await client.query(OPEN_DRAFT_ORDERS_QUERY, {"first": 50}, namespace="orders")
+    drafts = [
+        {
+            "id": e["node"]["id"],
+            "name": e["node"]["name"],
+            "created_at": e["node"]["createdAt"],
+            "value": _money(e["node"]["totalPriceSet"]),
+            "customer_id": (e["node"].get("customer") or {}).get("id"),
+            "customer_name": (e["node"].get("customer") or {}).get("displayName"),
+            "customer_email": ((e["node"].get("customer") or {}).get("defaultEmailAddress") or {}).get("emailAddress"),
+            "recovery_url": e["node"]["invoiceUrl"],
+            "line_items": [x["node"] for x in e["node"]["lineItems"]["edges"]],
+        }
+        for e in body["data"]["draftOrders"]["edges"]
+        if _money(e["node"]["totalPriceSet"]) >= min_value and _parse_dt(e["node"]["createdAt"]) >= cutoff
+    ]
+    return {
+        "source": "open_draft_orders_fallback",
+        "note": "No real abandoned checkouts found (expected on a dev store with no live shoppers). Showing open/incomplete draft orders as a stand-in signal instead.",
+        "checkouts": drafts,
+        "count": len(drafts),
+    }
 
 
 def customer_repeat_rate(orders_df: pd.DataFrame) -> dict[str, Any]:

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 from neolook.shopify_client import ShopifyClient
-from neolook.tools import analytics, crud
+from neolook.tools import agentic, analytics, crud
 
 load_dotenv()
 
@@ -18,6 +18,7 @@ _client = ShopifyClient()
 
 crud.register(mcp, _client)
 analytics.register(mcp, _client)
+agentic.register(mcp, _client)
 
 
 def main() -> None:
