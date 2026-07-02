@@ -123,3 +123,44 @@ correctly. All 4 pass. Run them yourself anytime with:
 source .venv/bin/activate
 python -m pytest tests/ -v
 ```
+
+---
+
+## Phase 4 — The first 6 tools (Tier 1: CRUD) (2026-07-02)
+
+**What we built:** `src/neolook/tools/crud.py` — the six baseline tools
+every Shopify MCP has: `search_products`, `update_product`, `get_order`,
+`list_orders`, `create_discount`, `adjust_inventory`. Plus `server.py`,
+which is the actual program an AI agent (like Claude Desktop or Claude
+Code) launches to talk to our tools.
+
+**Important step we didn't skip:** Shopify's API changes over time, and
+this project pins a recent version (2026-04). Rather than guess field and
+mutation names from general knowledge, we looked up the *live* schema for
+this store using Shopify's schema-inspection tools before writing any code,
+and validated every query/mutation against it. Two things we caught this
+way that would otherwise have caused confusing bugs:
+
+1. Shopify only lets an app read the **last 60 days** of orders by default
+   (older orders need an extra permission scope, `read_all_orders`). This
+   matters later when we build analytics that look back 90-120 days — we'll
+   need to either request that scope or design around the limit. Flagged
+   for Phase 6.
+2. As of API version 2026-04, adjusting inventory quantities requires an
+   "idempotency key" (a random ID that prevents the same adjustment from
+   accidentally being applied twice if a request is retried) — we generate
+   a fresh one automatically on every call.
+
+**Testing:** We smoke-tested against the real dev store: searched products
+(empty store, so 0 results - expected), listed orders (0, expected), and
+created + immediately deleted a real test discount code to prove the
+write path works end-to-end. We also wrote 8 more automated mocked tests
+(`tests/test_tools.py`, now 12 total across the project).
+
+**A real bug the tests caught:** Our first version of `get_order` assumed
+a plain number like `"1009"` was Shopify's internal record ID. It isn't -
+that's an unrelated opaque number Shopify uses internally. `"1009"` is
+actually the order's *display number* (shown as `#1009`), and needed to be
+looked up by name instead. The automated test caught this before it ever
+ran against the live store - a good example of why we write tests even on
+a project this size.
