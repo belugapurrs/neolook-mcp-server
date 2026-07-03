@@ -1,0 +1,455 @@
+{
+  "timestamp": "20260703T194901Z",
+  "summary": {
+    "total": 24,
+    "passed": 22,
+    "success_rate": 0.9167,
+    "by_category": {
+      "discount": {
+        "total": 3,
+        "passed": 3
+      },
+      "checkout": {
+        "total": 3,
+        "passed": 3
+      },
+      "analytics": {
+        "total": 9,
+        "passed": 9
+      },
+      "workflow": {
+        "total": 9,
+        "passed": 7
+      }
+    }
+  },
+  "results": [
+    {
+      "id": "disc-01",
+      "category": "discount",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "discount_exists",
+            "code": "EVALSUMMER15",
+            "percentage": 15,
+            "min_purchase": 100
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "disc-02",
+      "category": "discount",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "discount_exists",
+            "code": "EVALFLASH20",
+            "percentage": 20
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "disc-03",
+      "category": "discount",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "discount_exists",
+            "code": "EVALWELCOME10",
+            "percentage": 10,
+            "min_purchase": 50
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "checkout-01",
+      "category": "checkout",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "checkout_link_created"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "checkout-02",
+      "category": "checkout",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "checkout_link_created",
+            "customer_email": "test-eval@example.com"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "checkout-03",
+      "category": "checkout",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "checkout_link_created",
+            "min_line_items": 3
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "analytics-01",
+      "category": "analytics",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "revenue_summary"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "analytics-02",
+      "category": "analytics",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "top_products"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "analytics-03",
+      "category": "analytics",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "sales_velocity"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "analytics-04",
+      "category": "analytics",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "stale_inventory_report"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "analytics-05",
+      "category": "analytics",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "abandoned_checkout_report"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "analytics-06",
+      "category": "analytics",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "discount_roi"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "analytics-07",
+      "category": "analytics",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "customer_repeat_rate"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "analytics-08",
+      "category": "analytics",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "price_optimization_suggestions"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "analytics-09",
+      "category": "analytics",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "get_server_metrics"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "workflow-01",
+      "category": "workflow",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "collection_exists_with_products",
+            "min_products": 5
+          },
+          "passed": true,
+          "detail": "OK"
+        },
+        {
+          "check": {
+            "type": "discount_exists_scoped_to_collection",
+            "percentage": 20
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "workflow-02",
+      "category": "workflow",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "recover_abandoned_carts"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "workflow-03",
+      "category": "workflow",
+      "passed": false,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "search_products"
+          },
+          "passed": true,
+          "detail": "OK"
+        },
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "update_product"
+          },
+          "passed": false,
+          "detail": "Tool mcp__neolook__update_product was not called (called: ['ToolSearch', 'mcp__neolook__search_products'])"
+        }
+      ]
+    },
+    {
+      "id": "workflow-04",
+      "category": "workflow",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "get_order"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "workflow-05",
+      "category": "workflow",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "list_orders"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "workflow-06",
+      "category": "workflow",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "adjust_inventory"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "workflow-07",
+      "category": "workflow",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "revenue_summary"
+          },
+          "passed": true,
+          "detail": "OK"
+        },
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "top_products"
+          },
+          "passed": true,
+          "detail": "OK"
+        },
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "get_server_metrics"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "workflow-08",
+      "category": "workflow",
+      "passed": true,
+      "checks": [
+        {
+          "check": {
+            "type": "collection_exists_with_products",
+            "min_products": 3
+          },
+          "passed": true,
+          "detail": "OK"
+        },
+        {
+          "check": {
+            "type": "discount_exists_scoped_to_collection",
+            "percentage": 15
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    },
+    {
+      "id": "workflow-09",
+      "category": "workflow",
+      "passed": false,
+      "checks": [
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "recover_abandoned_carts"
+          },
+          "passed": false,
+          "detail": "Tool mcp__neolook__recover_abandoned_carts was not called (called: ['ToolSearch', 'mcp__neolook__abandoned_checkout_report', 'mcp__neolook__create_checkout_link', 'mcp__neolook__create_discount', 'mcp__neolook__search_products'])"
+        },
+        {
+          "check": {
+            "type": "tool_called",
+            "tool": "create_checkout_link"
+          },
+          "passed": true,
+          "detail": "OK"
+        }
+      ]
+    }
+  ],
+  "metrics": {
+    "cache_disabled": {
+      "requests_attempted": 104,
+      "requests_sent_to_shopify": 104,
+      "cache_hits": 0,
+      "throttle_events": 0
+    },
+    "cache_enabled": {
+      "requests_attempted": 103,
+      "requests_sent_to_shopify": 81,
+      "cache_hits": 22,
+      "throttle_events": 0
+    }
+  },
+  "traffic_reduction": 0.2212
+}

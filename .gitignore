@@ -21,3 +21,7 @@ evals/results/*.json
 # Editors
 .vscode/
 .idea/
+
+# Machine-specific / regenerated locally - see docs/BUILD_LOG.md
+.mcp.json
+seed_manifest.json

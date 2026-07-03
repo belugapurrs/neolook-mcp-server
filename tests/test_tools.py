@@ -157,6 +157,16 @@ async def test_adjust_inventory_success(mcp_and_client):
             TOKEN_RESPONSE,
             gql(
                 {
+                    "productVariant": {
+                        "inventoryItem": {
+                            "id": "gid://shopify/InventoryItem/1",
+                            "inventoryLevels": {"edges": [{"node": {"location": {"id": "gid://shopify/Location/1"}}}]},
+                        }
+                    }
+                }
+            ),
+            gql(
+                {
                     "inventoryAdjustQuantities": {
                         "userErrors": [],
                         "inventoryAdjustmentGroup": {"createdAt": "2026-01-01T00:00:00Z", "reason": "correction", "changes": [{"name": "available", "delta": 5}]},
@@ -168,8 +178,7 @@ async def test_adjust_inventory_success(mcp_and_client):
     result = await _call(
         mcp,
         "adjust_inventory",
-        inventory_item_id="gid://shopify/InventoryItem/1",
-        location_id="gid://shopify/Location/1",
+        variant_id="gid://shopify/ProductVariant/1",
         delta=5,
     )
     assert result["changes"][0]["delta"] == 5

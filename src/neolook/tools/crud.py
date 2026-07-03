@@ -287,14 +287,47 @@ def register(mcp: FastMCP, client: ShopifyClient) -> None:
 
     @mcp.tool(
         description=(
-            "Adjust (increment or decrement) the available inventory of a product variant at a "
-            "specific location by a delta amount (e.g. delta=-3 to reduce stock by 3, delta=10 to "
-            "add 10). inventory_item_id and location_id are GIDs. Returns the applied change, or an "
-            "error message if the adjustment failed."
+            "Adjust (increment or decrement) the available inventory of a product variant by a "
+            "delta amount (e.g. delta=-3 to reduce stock by 3, delta=10 to add 10). Pass variant_id "
+            "as a GID (gid://shopify/ProductVariant/...) - the same id search_products returns. "
+            "location_id is optional and only needed if the variant stocks inventory at more than "
+            "one location; if omitted and there's exactly one stocking location, it's used "
+            "automatically. Returns the applied change, or an error message if the adjustment failed."
         )
     )
-    async def adjust_inventory(inventory_item_id: str, location_id: str, delta: int) -> dict[str, Any]:
+    async def adjust_inventory(variant_id: str, delta: int, location_id: str | None = None) -> dict[str, Any]:
         try:
+            variant_body = await client.query(
+                """
+                query VariantInventory($id: ID!) {
+                  productVariant(id: $id) {
+                    inventoryItem {
+                      id
+                      inventoryLevels(first: 10) { edges { node { location { id } } } }
+                    }
+                  }
+                }
+                """,
+                {"id": variant_id},
+                namespace="inventory",
+            )
+            variant = variant_body.get("data", {}).get("productVariant")
+            if not variant:
+                return {"error": f"No product variant found for id {variant_id}"}
+            inventory_item_id = variant["inventoryItem"]["id"]
+            locations = [e["node"]["location"] for e in variant["inventoryItem"]["inventoryLevels"]["edges"]]
+
+            if location_id is None:
+                if len(locations) == 1:
+                    location_id = locations[0]["id"]
+                elif len(locations) == 0:
+                    return {"error": f"Variant {variant_id} isn't stocked at any location."}
+                else:
+                    return {
+                        "error": "Variant is stocked at multiple locations - pass location_id explicitly.",
+                        "locations": locations,
+                    }
+
             body = await client.mutate(
                 """
                 mutation AdjustInventory($input: InventoryAdjustQuantitiesInput!, $idempotencyKey: String!) {

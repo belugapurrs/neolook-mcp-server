@@ -59,6 +59,22 @@ ALL_TOOL_NAMES = [
 ]
 MCP_TOOL_NAMES = [f"mcp__neolook__{name}" for name in ALL_TOOL_NAMES]
 
+# `--allowedTools` only pre-approves tools - it does NOT exclude everything
+# else. Confirmed live: even with only our MCP tools + ToolSearch allowed,
+# the agent still had full Bash/Read/Write access (they're built-in tools,
+# not gated by the allowlist) and burned an entire task's turns exploring
+# this repo's source instead of doing the task - it even Read our real
+# .env file, printing the live Shopify client secret into its transcript.
+# These must be explicitly blocked so the agent can only use our tools.
+BUILTIN_TOOLS_TO_BLOCK = [
+    "Task", "Artifact", "Bash", "CronCreate", "CronDelete", "CronList", "DesignSync",
+    "Edit", "EnterWorktree", "ExitWorktree", "Glob", "Grep", "ListMcpResourcesTool", "Monitor",
+    "NotebookEdit", "PushNotification", "Read", "ReadMcpResourceDirTool",
+    "ReadMcpResourceTool", "RemoteTrigger", "ReportFindings", "ScheduleWakeup",
+    "SendMessage", "Skill", "TaskOutput", "TaskStop", "TodoWrite", "WebFetch",
+    "WebSearch", "Write",
+]
+
 MAX_TURNS = 15
 SUBPROCESS_TIMEOUT_SECONDS = 180
 
@@ -103,7 +119,9 @@ async def run_agent_task(prompt: str) -> dict[str, Any]:
     cmd = [
         "claude", "-p", dated_prompt,
         "--mcp-config", str(MCP_CONFIG_PATH),
+        "--strict-mcp-config",
         "--allowedTools", "ToolSearch", *MCP_TOOL_NAMES,
+        "--disallowedTools", *BUILTIN_TOOLS_TO_BLOCK,
         "--max-turns", str(MAX_TURNS),
         "--output-format", "stream-json",
         "--verbose",
@@ -416,7 +434,13 @@ async def main() -> None:
     # tracked separately via the metrics_file mechanism below, because each
     # task launches a fresh MCP server subprocess whose in-memory client
     # would otherwise reset to zero every time (see docs/BUILD_LOG.md).
-    verification_client = ShopifyClient()
+    # cache_enabled=False is required here: this one instance is reused
+    # across all tasks in both passes, and the agent's mutations happen in a
+    # separate subprocess that can never invalidate this client's cache. A
+    # cached snapshot would silently go stale for up to CACHE_TTL_SECONDS,
+    # making every diff-based check (new checkout links, new collections)
+    # fail regardless of what the agent actually did.
+    verification_client = ShopifyClient(cache_enabled=False)
 
     if args.skip_cache_comparison:
         metrics_file = RESULTS_DIR / ".metrics_single_pass.json"
