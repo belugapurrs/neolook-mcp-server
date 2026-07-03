@@ -11,10 +11,12 @@ Requirements to run this for real:
     separate install from whatever client you're using to chat with
     Claude right now (e.g. the VS Code extension). See
     https://code.claude.com/docs/en/headless for install instructions.
-  - Your Agent SDK monthly credit claimed in your Claude account settings
-    (Settings -> Usage -> Claude Code). This suite runs on that free
-    monthly credit, NOT a paid API key - see docs/BUILD_LOG.md for why we
-    deliberately never set ANTHROPIC_API_KEY.
+  - Logged in with `claude` using your existing Pro/Max plan. This suite
+    runs on your normal plan usage, NOT a paid API key - there is no
+    separate "Agent SDK credit" to claim (an earlier assumption in this
+    project's spec that turned out to be outdated - see docs/BUILD_LOG.md).
+    We deliberately never set ANTHROPIC_API_KEY, which would switch billing
+    to pay-per-token API usage instead.
 
 Usage:
     python evals/run_evals.py                  # full 24-task suite, twice (cache off/on)
@@ -61,13 +63,20 @@ MAX_TURNS = 15
 SUBPROCESS_TIMEOUT_SECONDS = 180
 
 
-def write_mcp_config() -> None:
+def write_mcp_config(metrics_file: Path | None = None) -> None:
+    """Writes .mcp.json pointing at our server. When metrics_file is set,
+    it's passed through as an env var so the server's ShopifyClient
+    accumulates request/cache counters across the many short-lived
+    subprocesses the eval harness launches (one per task) instead of each
+    one starting from zero - see shopify_client.py's metrics_file param."""
     python_bin = REPO_ROOT / ".venv" / "bin" / "python"
+    env = {"NEOLOOK_METRICS_FILE": str(metrics_file)} if metrics_file else {}
     config = {
         "mcpServers": {
             "neolook": {
                 "command": str(python_bin),
                 "args": ["-m", "neolook.server"],
+                "env": env,
             }
         }
     }
@@ -381,6 +390,16 @@ async def run_suite(client: ShopifyClient, tasks: list[dict]) -> list[dict]:
     return results
 
 
+def _read_metrics_file(path: Path) -> dict[str, Any]:
+    """Raw counters only (requests_attempted/requests_sent_to_shopify/
+    cache_hits/throttle_events) - no derived hit-rate here, since
+    requests_sent_to_shopify mixes cache-missed reads with mutations (which
+    are never cached), so a hits/(hits+sent) ratio would be misleading."""
+    if not path.exists():
+        return {"requests_attempted": 0, "requests_sent_to_shopify": 0, "cache_hits": 0, "throttle_events": 0}
+    return json.loads(path.read_text())
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", type=int, default=None, help="Only run the first N tasks")
@@ -391,34 +410,46 @@ async def main() -> None:
     if args.dry_run:
         tasks = tasks[: args.dry_run]
 
-    write_mcp_config()
     RESULTS_DIR.mkdir(exist_ok=True)
+    # Used only for our own verification queries (snapshot_state, checks) -
+    # NOT the metric of interest. The agent's actual tool-call traffic is
+    # tracked separately via the metrics_file mechanism below, because each
+    # task launches a fresh MCP server subprocess whose in-memory client
+    # would otherwise reset to zero every time (see docs/BUILD_LOG.md).
+    verification_client = ShopifyClient()
 
     if args.skip_cache_comparison:
-        client = ShopifyClient()
-        results = await run_suite(client, tasks)
-        metrics = client.get_metrics()
-        await client.aclose()
+        metrics_file = RESULTS_DIR / ".metrics_single_pass.json"
+        metrics_file.unlink(missing_ok=True)
+        write_mcp_config(metrics_file)
+        results = await run_suite(verification_client, tasks)
+        metrics = {"agent_tool_traffic": _read_metrics_file(metrics_file)}
         traffic_reduction = None
     else:
-        os.environ["CACHE_ENABLED"] = "false"
-        client_off = ShopifyClient(cache_enabled=False)
-        console.print("\n[bold]--- Pass 1: cache disabled ---[/bold]")
-        results = await run_suite(client_off, tasks)
-        metrics_off = client_off.get_metrics()
-        await client_off.aclose()
+        metrics_off_file = RESULTS_DIR / ".metrics_cache_off.json"
+        metrics_on_file = RESULTS_DIR / ".metrics_cache_on.json"
+        metrics_off_file.unlink(missing_ok=True)
+        metrics_on_file.unlink(missing_ok=True)
 
-        client_on = ShopifyClient(cache_enabled=True)
+        os.environ["CACHE_ENABLED"] = "false"
+        write_mcp_config(metrics_off_file)
+        console.print("\n[bold]--- Pass 1: cache disabled ---[/bold]")
+        results = await run_suite(verification_client, tasks)
+        metrics_off = _read_metrics_file(metrics_off_file)
+
+        os.environ["CACHE_ENABLED"] = "true"
+        write_mcp_config(metrics_on_file)
         console.print("\n[bold]--- Pass 2: cache enabled ---[/bold]")
-        await run_suite(client_on, tasks)
-        metrics_on = client_on.get_metrics()
-        await client_on.aclose()
+        await run_suite(verification_client, tasks)
+        metrics_on = _read_metrics_file(metrics_on_file)
 
         metrics = {"cache_disabled": metrics_off, "cache_enabled": metrics_on}
         if metrics_off["requests_sent_to_shopify"]:
             traffic_reduction = round(1 - (metrics_on["requests_sent_to_shopify"] / metrics_off["requests_sent_to_shopify"]), 4)
         else:
             traffic_reduction = None
+
+    await verification_client.aclose()
 
     summary = summarize(results)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

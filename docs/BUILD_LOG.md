@@ -339,4 +339,30 @@ consistently everywhere.
 **Confirmed working:** a 3-task dry run
 (`python evals/run_evals.py --dry-run 3 --skip-cache-comparison`) now
 passes 3/3, and we verified all temporary discount codes were cleaned up
-afterward. Ready for the full 24-task suite.
+afterward.
+
+**One more design gap, caught before it could quietly produce a
+meaningless number:** the caching-traffic-reduction metric is the whole
+point of the cache-off/cache-on double pass - but each eval task launches
+a *brand new* MCP server subprocess (stdio MCP servers are 1:1 with their
+client process, and `claude -p` starts a fresh one every invocation). That
+means the server's in-memory request counters reset to zero before every
+single task, no matter what `CACHE_ENABLED` is set to - so the number we
+were about to report would have reflected our own harness's leftover
+verification queries, not the agent's actual tool-call traffic.
+
+**Fix:** `ShopifyClient` now accepts an optional `metrics_file` path. When
+set, it loads a running total from that file at startup and re-saves the
+combined total after every request - so counts accumulate correctly
+across the many short-lived server subprocesses launched within one pass,
+instead of resetting each time. The eval harness points each pass at its
+own metrics file (`.metrics_cache_off.json` / `.metrics_cache_on.json`,
+gitignored scratch files) via the `.mcp.json` server config's `env` field,
+and reads the final combined totals from those files - not from its own
+separate verification-query client - to compute `traffic_reduction`.
+Verified with a 3-task dual-pass dry run: both passes correctly recorded
+identical, non-zero counts for those particular (mutation-only) tasks,
+producing an honest 0% reduction for that subset - discount-code creation
+is a write, and writes are never cached, so that's the expected result,
+not a bug. The full 24-task suite includes several read-heavy analytics
+tasks where real caching benefit should actually show up.

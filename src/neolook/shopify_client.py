@@ -13,8 +13,10 @@ Handles:
 """
 
 import asyncio
+import json
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -38,6 +40,7 @@ class ShopifyClient:
         api_version: str | None = None,
         cache_ttl_seconds: int | None = None,
         cache_enabled: bool | None = None,
+        metrics_file: str | None = None,
     ):
         self.store_domain = store_domain or os.environ["SHOPIFY_STORE_DOMAIN"]
         self.client_id = client_id or os.environ["SHOPIFY_CLIENT_ID"]
@@ -57,13 +60,39 @@ class ShopifyClient:
 
         self._http = httpx.AsyncClient(timeout=30.0)
 
-        # Metrics
+        # Metrics. When metrics_file is set, counts are combined with a
+        # baseline read from disk and re-persisted after every request, so
+        # cumulative totals survive across separate short-lived processes
+        # (e.g. one MCP server subprocess launched per eval task) instead of
+        # resetting to zero each time - see get_metrics()/_persist_metrics().
         self.requests_attempted = 0
         self.requests_sent_to_shopify = 0
         self.throttle_events = 0
+        self.metrics_file = Path(metrics_file) if metrics_file else None
+        self._metrics_baseline = self._load_metrics_baseline()
 
     async def aclose(self) -> None:
         await self._http.aclose()
+
+    def _load_metrics_baseline(self) -> dict[str, int]:
+        empty = {"requests_attempted": 0, "requests_sent_to_shopify": 0, "cache_hits": 0, "throttle_events": 0}
+        if not self.metrics_file or not self.metrics_file.exists():
+            return empty
+        try:
+            return {**empty, **json.loads(self.metrics_file.read_text())}
+        except (json.JSONDecodeError, OSError):
+            return empty
+
+    def _persist_metrics(self) -> None:
+        if not self.metrics_file:
+            return
+        combined = {
+            "requests_attempted": self._metrics_baseline["requests_attempted"] + self.requests_attempted,
+            "requests_sent_to_shopify": self._metrics_baseline["requests_sent_to_shopify"] + self.requests_sent_to_shopify,
+            "cache_hits": self._metrics_baseline["cache_hits"] + self.cache.hits,
+            "throttle_events": self._metrics_baseline["throttle_events"] + self.throttle_events,
+        }
+        self.metrics_file.write_text(json.dumps(combined))
 
     # ---------------------------------------------------------------- auth
 
@@ -179,11 +208,13 @@ class ShopifyClient:
 
         cached = self.cache.get(namespace, cache_key)
         if cached is not None:
+            self._persist_metrics()
             return cached
 
         self.requests_sent_to_shopify += 1
         body = await self._post_graphql(query, variables)
         self.cache.set(namespace, cache_key, body)
+        self._persist_metrics()
         return body
 
     async def mutate(
@@ -199,16 +230,22 @@ class ShopifyClient:
         body = await self._post_graphql(mutation, variables)
         for namespace in invalidate_namespaces or []:
             self.cache.clear_namespace(namespace)
+        self._persist_metrics()
         return body
 
     def get_metrics(self) -> dict[str, Any]:
-        cache_hits = self.cache.hits
+        """Metrics for this process's own activity, combined with any
+        baseline loaded from metrics_file (see _load_metrics_baseline)."""
+        cache_hits = self._metrics_baseline["cache_hits"] + self.cache.hits
+        requests_attempted = self._metrics_baseline["requests_attempted"] + self.requests_attempted
+        requests_sent_to_shopify = self._metrics_baseline["requests_sent_to_shopify"] + self.requests_sent_to_shopify
+        throttle_events = self._metrics_baseline["throttle_events"] + self.throttle_events
         total_reads = cache_hits + self.cache.misses
         hit_rate = cache_hits / total_reads if total_reads else 0.0
         return {
-            "requests_attempted": self.requests_attempted,
-            "requests_sent_to_shopify": self.requests_sent_to_shopify,
+            "requests_attempted": requests_attempted,
+            "requests_sent_to_shopify": requests_sent_to_shopify,
             "cache_hits": cache_hits,
             "cache_hit_rate": round(hit_rate, 4),
-            "throttle_events": self.throttle_events,
+            "throttle_events": throttle_events,
         }
