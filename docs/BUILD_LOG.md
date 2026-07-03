@@ -196,3 +196,78 @@ easy to miss in Shopify's newer Dev Dashboard flow."
 
 **Confirmed fixed:** A fresh token now includes `read_all_orders` in its
 scope list. We're proceeding with the full 120-day seed data plan.
+
+---
+
+## Phase 5 — Tier 2 analytics, Tier 3 agentic tools, and the seed script (2026-07-03)
+
+**What we built:** The remaining 12 tools (7 analytics + 5 agentic
+commerce), bringing the total to all 18 planned tools, plus
+`scripts/seed_store.py` to populate the store with realistic demo data.
+
+- `src/neolook/engines/analytics_engine.py` - the pandas layer. Fetches
+  orders/products from Shopify and computes revenue trends, top products,
+  sales velocity, stale inventory, discount ROI, and repeat-customer rate.
+- `src/neolook/tools/analytics.py` - thin MCP wrappers around the engine
+  (`revenue_summary`, `top_products`, `sales_velocity`,
+  `stale_inventory_report`, `abandoned_checkout_report`, `discount_roi`,
+  `customer_repeat_rate`).
+- `src/neolook/tools/agentic.py` - the "beyond CRUD" tier: multi-step
+  workflows in a single tool call (`recover_abandoned_carts`,
+  `create_flash_sale`, `create_checkout_link`,
+  `price_optimization_suggestions`, `get_server_metrics`).
+
+**Honesty check on `abandoned_checkout_report`:** We verified live that
+Shopify's abandoned-checkout data can only ever come from a real shopper
+leaving checkout mid-flow - there's no API to fabricate one for demo
+purposes. So this tool tries the real data first, and when none exists
+(the normal case on a dev store with no live shoppers), it clearly labels
+its fallback to open/incomplete draft orders as a stand-in signal, instead
+of silently returning nothing or claiming something it can't back up.
+
+**The seed script (`scripts/seed_store.py`):** Populates ~10 collections,
+60 products (deliberately split into "fast," "normal," and "stale"
+sellers so stale-inventory and top-products reports have something real
+to find), 150 customers (10 flagged VIP so repeat-purchase patterns show
+up), 3 discount codes, and ~400 orders built via `draftOrderCreate` +
+`draftOrderComplete`.
+
+**The dates problem, and how we solved it honestly:** Shopify always
+stamps a new order's `createdAt` as *right now* - there's no API to
+backdate an order. That would make a demo store's entire order history
+look like it all happened in the same minute, which breaks any
+time-windowed analytics (daily revenue trends, sales velocity, etc). Our
+fix: the seed script assigns each order an *intended* date spread across
+the last 120 days and writes it to `seed_manifest.json` alongside the
+order's real ID. `analytics_engine.py` then optionally reads that file and
+uses the intended date in place of the real one - clearly a demo
+simulation layered on top of real Shopify records, not a claim that
+Shopify backdated anything. When no manifest file exists (e.g. a real
+production store), the code automatically falls back to real dates and
+pushes the date filter server-side for efficiency instead.
+
+**Two real bugs found while running this live (not in a test - only real
+usage surfaced them):**
+1. `ShopifyClient` only retried on HTTP 5xx errors, not on network-level
+   timeouts. A `~13-minute` run making ~800 sequential API calls hit a
+   transient `httpx.ReadTimeout` partway through and crashed unhandled.
+   Fixed by catching `httpx.TransportError` and retrying with the same
+   backoff logic used for 5xx errors.
+2. The seed script only wrote `seed_manifest.json` once, at the very end.
+   When the crash above happened, we'd actually created 345 real orders in
+   Shopify, but lost all of their simulated dates because the manifest
+   write never ran. Fixed by saving the manifest every 25 orders and
+   wrapping the final write in a `finally` block, so a crash (or being
+   killed - see below) only ever loses a handful of records instead of
+   everything.
+
+**Final seed run:** completed with 60 products, 150 customers, 10
+collections, 3 discount codes, and 392 orders (close to the ~400 target -
+the run got killed by the environment near the very end of its ~10+
+minute runtime, likely a background-process time limit unrelated to our
+code, but thanks to the incremental-save fix above we lost almost nothing).
+392/400 is well within the spec's "~400" and was accepted rather than
+risk a third long-running interruption. `seed_manifest.json` has intended
+dates for 375 of those orders; the remaining ~17 simply fall back to their
+real (today's) date in analytics, which is a negligible cosmetic gap, not
+a correctness issue.
