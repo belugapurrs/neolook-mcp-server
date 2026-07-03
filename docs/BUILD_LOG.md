@@ -285,8 +285,58 @@ engineering toward.
 
 We also wrote `evals/tasks.yaml` (24 tasks across discount/checkout/
 analytics/workflow categories) and `evals/run_evals.py` (the harness that
-will run each task through a headless Claude Code agent and verify the
-result directly against the store). Running it for real requires the
-Claude Code CLI installed separately from whatever you're using to chat
-with Claude right now, plus your Agent SDK monthly credit claimed - both
-still to do before we can dry-run it.
+runs each task through a headless Claude Code agent and verifies the
+result directly against the store).
+
+---
+
+## Phase 6 — Getting the eval harness actually working (2026-07-03)
+
+**Setup:** Installed the Claude Code CLI (a separate program from whatever
+chat interface you're using right now) via `curl -fsSL https://claude.ai/install.sh | bash`,
+fixed a PATH issue (the installer's symlink at `~/.local/bin/claude` wasn't
+on PATH), and logged in with the existing Pro plan account. Along the way
+we learned the spec's assumption of a separate "Agent SDK monthly credit"
+to claim doesn't apply anymore - Anthropic paused that billing change, so
+Claude Code usage on a Pro/Max plan just counts as normal plan usage, no
+extra step needed.
+
+**Three real bugs found by actually running it (a dry run of 3 tasks
+failed silently, 0/3, with no obvious error) - all three only showed up
+by testing live, not by reading the code:**
+
+1. `run_evals.py` invoked `claude` with the `--bare` flag, which (we
+   verified by testing directly) breaks authentication entirely - it
+   returns "Not logged in" even when a real login session exists. Removed
+   `--bare`.
+2. In this Claude Code environment, MCP tool schemas are "deferred" until
+   the agent calls a `ToolSearch` meta-tool to resolve them. Our
+   `--allowedTools` list only named our own 18 tools, not `ToolSearch`, so
+   the agent could never actually reach them. Added `ToolSearch` to the
+   allowlist.
+3. Several tasks say things like "valid for the next 7 days," which
+   requires date math. The agent's first instinct was to reach for `Bash`
+   to compute the date - a tool we deliberately don't allow, to keep the
+   eval agent scoped to only our own tools. Rather than open that door,
+   we now hand the agent today's date directly in the prompt
+   (`"Today's date is 2026-07-03 (UTC). <task>"`), so it never needs to.
+
+**A fourth issue, caught by comparing two check runs a few minutes apart:**
+a discount code that a check reported as "not found" immediately after the
+agent created it was reported as "already exists" on a manual re-check
+moments later - Shopify's discount-lookup read path can lag slightly
+behind the write. Fixed by retrying each live-verification check up to 3
+times with a short delay before concluding it failed, instead of trusting
+a single immediate read.
+
+**Also fixed:** the between-task cleanup originally deleted a hardcoded
+list of 3 known discount codes regardless of which task ran. Replaced with
+a real before/after diff (snapshot discount codes, collections, and draft
+orders before each task, delete whatever's new afterward) - the same
+pattern already used for collections and draft orders, now applied
+consistently everywhere.
+
+**Confirmed working:** a 3-task dry run
+(`python evals/run_evals.py --dry-run 3 --skip-cache-comparison`) now
+passes 3/3, and we verified all temporary discount codes were cleaned up
+afterward. Ready for the full 24-task suite.

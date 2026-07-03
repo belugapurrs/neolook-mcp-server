@@ -75,11 +75,26 @@ def write_mcp_config() -> None:
 
 
 async def run_agent_task(prompt: str) -> dict[str, Any]:
-    """Runs one task through headless Claude Code, returns {tools_called, raw_result, error}."""
+    """Runs one task through headless Claude Code, returns {tools_called, raw_result, error}.
+
+    Notes from live debugging (see docs/BUILD_LOG.md):
+    - `--bare` breaks authentication entirely ("Not logged in"), so it's
+      deliberately NOT used here even though it would otherwise be the
+      cleaner/more isolated choice for reproducible eval runs.
+    - This environment defers MCP tool schemas until a `ToolSearch` call
+      resolves them, so `ToolSearch` must be in the allowlist alongside our
+      own tools, or the agent can never actually reach them.
+    - We hand the agent today's date directly instead of letting it reach
+      for `Bash` to compute relative dates ("in 7 days") - keeps the tool
+      surface scoped to just our tools + ToolSearch, per the spec's
+      "auto-approved for only our tools" intent.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    dated_prompt = f"Today's date is {today} (UTC). {prompt}"
     cmd = [
-        "claude", "--bare", "-p", prompt,
+        "claude", "-p", dated_prompt,
         "--mcp-config", str(MCP_CONFIG_PATH),
-        "--allowedTools", *MCP_TOOL_NAMES,
+        "--allowedTools", "ToolSearch", *MCP_TOOL_NAMES,
         "--max-turns", str(MAX_TURNS),
         "--output-format", "stream-json",
         "--verbose",
@@ -119,6 +134,23 @@ async def run_agent_task(prompt: str) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------- checks
+
+CHECK_RETRIES = 3
+CHECK_RETRY_DELAY_SECONDS = 2.0
+
+
+async def _with_retry(check_fn):
+    """Shopify's discount/collection reads can lag a moment behind a write
+    (confirmed live: a just-created discount code returned "not found" on
+    the first check, then "already exists" on a manual re-check seconds
+    later). Retry a few times before concluding a check genuinely failed."""
+    for attempt in range(CHECK_RETRIES):
+        passed, detail = await check_fn()
+        if passed or attempt == CHECK_RETRIES - 1:
+            return passed, detail
+        await asyncio.sleep(CHECK_RETRY_DELAY_SECONDS)
+    return passed, detail
+
 
 async def _discount_by_code(client: ShopifyClient, code: str) -> dict | None:
     body = await client.query(
@@ -212,7 +244,7 @@ def check_tool_called(tools_called: set[str], check: dict) -> tuple[bool, str]:
 
 # ----------------------------------------------------------- state diff
 
-async def snapshot_state(client: ShopifyClient) -> dict[str, list[str]]:
+async def snapshot_state(client: ShopifyClient) -> dict[str, list]:
     collections_body = await client.query(
         'query { collections(first: 50, sortKey: TITLE, query: "title:Flash Sale*") { edges { node { id } } } }',
         namespace="collections",
@@ -221,9 +253,23 @@ async def snapshot_state(client: ShopifyClient) -> dict[str, list[str]]:
         "query { draftOrders(first: 50, sortKey: UPDATED_AT, reverse: true) { edges { node { id } } } }",
         namespace="orders",
     )
+    discounts_body = await client.query(
+        """
+        query { discountNodes(first: 50, sortKey: CREATED_AT, reverse: true) {
+          edges { node { id discount { ... on DiscountCodeBasic { codes(first: 1) { edges { node { code } } } } } } }
+        } }
+        """,
+        namespace="discounts",
+    )
+    discount_codes = []
+    for e in discounts_body["data"]["discountNodes"]["edges"]:
+        code_edges = (e["node"]["discount"] or {}).get("codes", {}).get("edges", [])
+        if code_edges:
+            discount_codes.append(code_edges[0]["node"]["code"])
     return {
         "collection_ids": [e["node"]["id"] for e in collections_body["data"]["collections"]["edges"]],
         "draft_order_ids": [e["node"]["id"] for e in drafts_body["data"]["draftOrders"]["edges"]],
+        "discount_codes": discount_codes,
     }
 
 
@@ -266,13 +312,13 @@ async def score_task(client: ShopifyClient, task: dict, tools_called: set[str], 
     for check in task["checks"]:
         check_type = check["type"]
         if check_type == "discount_exists":
-            passed, detail = await check_discount_exists(client, check)
+            passed, detail = await _with_retry(lambda: check_discount_exists(client, check))
         elif check_type == "discount_exists_scoped_to_collection":
-            passed, detail = await check_discount_exists_scoped_to_collection(client, check, new_discount_codes)
+            passed, detail = await _with_retry(lambda: check_discount_exists_scoped_to_collection(client, check, new_discount_codes))
         elif check_type == "collection_exists_with_products":
-            passed, detail = await check_collection_exists_with_products(client, check, new_collection_ids)
+            passed, detail = await _with_retry(lambda: check_collection_exists_with_products(client, check, new_collection_ids))
         elif check_type == "checkout_link_created":
-            passed, detail = await check_checkout_link_created(client, check, new_draft_order_ids)
+            passed, detail = await _with_retry(lambda: check_checkout_link_created(client, check, new_draft_order_ids))
         elif check_type == "tool_called":
             passed, detail = check_tool_called(tools_called, check)
         else:
@@ -293,10 +339,13 @@ async def run_task(client: ShopifyClient, task: dict) -> dict[str, Any]:
     after = await snapshot_state(client)
     new_collection_ids = [c for c in after["collection_ids"] if c not in before["collection_ids"]]
     new_draft_order_ids = [d for d in after["draft_order_ids"] if d not in before["draft_order_ids"]]
-
-    new_discount_codes = []
-    for candidate in ["EVALSUMMER15", "EVALFLASH20", "EVALWELCOME10"]:
-        new_discount_codes.append(candidate)  # checked for existence, not assumed created
+    new_discount_codes = [c for c in after["discount_codes"] if c not in before["discount_codes"]]
+    # Also check codes named explicitly in this task's own checks, in case
+    # the discount-listing snapshot lags behind the write (same eventual-
+    # consistency lag _with_retry guards against elsewhere).
+    for check in task["checks"]:
+        if check["type"] == "discount_exists" and check["code"] not in new_discount_codes:
+            new_discount_codes.append(check["code"])
 
     result = await score_task(client, task, agent_result["tools_called"], new_collection_ids, new_draft_order_ids, new_discount_codes)
     await cleanup_new_resources(client, new_collection_ids, new_draft_order_ids, new_discount_codes)
