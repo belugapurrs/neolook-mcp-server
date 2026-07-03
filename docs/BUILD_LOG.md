@@ -271,3 +271,22 @@ risk a third long-running interruption. `seed_manifest.json` has intended
 dates for 375 of those orders; the remaining ~17 simply fall back to their
 real (today's) date in analytics, which is a negligible cosmetic gap, not
 a correctness issue.
+
+**Live verification against real seeded data:** ran all 9 Tier 2/3 tools
+against the actual store (`scripts/smoke_test_analytics_agentic.py`) and
+got realistic, sensible results end to end - e.g. $33,216 revenue and 311
+orders over the last 90 days, "Rain Poncho" as the top seller, exactly the
+3 deliberately-stale products correctly flagged, 86.8% of revenue from
+repeat customers (expected, since a few VIP customers were seeded to buy
+often), and all 3 discount codes showing accurate ROI numbers. In this one
+smoke-test run, the cache already served 25 of 32 requests (78% hit rate)
+- an early real signal for the caching claim, not a target we're
+engineering toward.
+
+We also wrote `evals/tasks.yaml` (24 tasks across discount/checkout/
+analytics/workflow categories) and `evals/run_evals.py` (the harness that
+will run each task through a headless Claude Code agent and verify the
+result directly against the store). Running it for real requires the
+Claude Code CLI installed separately from whatever you're using to chat
+with Claude right now, plus your Agent SDK monthly credit claimed - both
+still to do before we can dry-run it.
