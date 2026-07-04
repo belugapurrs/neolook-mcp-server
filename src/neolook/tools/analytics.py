@@ -10,6 +10,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from neolook.engines import analytics_engine as engine
+from neolook.engines import rfm
 from neolook.shopify_client import ShopifyClient, ShopifyAPIError
 
 
@@ -115,5 +116,64 @@ def register(mcp: FastMCP, client: ShopifyClient) -> None:
         try:
             orders_df, _ = await engine.fetch_order_data(client, days)
             return engine.customer_repeat_rate(orders_df)
+        except ShopifyAPIError as e:
+            return {"error": str(e)}
+
+    @mcp.tool(
+        description=(
+            "Segment customers by RFM (Recency, Frequency, Monetary) analysis over the last `days` "
+            "days: Champions (recent, frequent, big spenders), Loyal, At-Risk (used to buy often, "
+            "haven't lately), Hibernating, New, or Others. Scores are quintiles relative to this "
+            "store's own customer base, not fixed thresholds. Optionally filter to just one segment "
+            "(e.g. segment='At-Risk') for a targeted list. Use this for questions like 'who are my "
+            "best customers' or 'which customers are at risk of churning'."
+        )
+    )
+    async def segment_customers(segment: str | None = None, days: int = 120) -> dict[str, Any]:
+        try:
+            orders_df, _ = await engine.fetch_order_data(client, days)
+            rfm_df = rfm.compute_rfm(orders_df)
+            total_analyzed = len(rfm_df)
+            segment_counts = rfm_df["rfm_segment"].value_counts().to_dict() if not rfm_df.empty else {}
+
+            if segment:
+                rfm_df = rfm_df[rfm_df["rfm_segment"].str.lower() == segment.lower()]
+
+            customers = [
+                {
+                    "customer_id": row["customer_id"],
+                    "customer_name": row["customer_name"],
+                    "segment": row["rfm_segment"],
+                    "recency_days": int(row["recency_days"]),
+                    "frequency": int(row["frequency"]),
+                    "monetary": float(row["monetary"]),
+                }
+                for _, row in rfm_df.sort_values("monetary", ascending=False).iterrows()
+            ]
+            return {"total_customers_analyzed": total_analyzed, "segment_counts": segment_counts, "customers": customers}
+        except ShopifyAPIError as e:
+            return {"error": str(e)}
+
+    @mcp.tool(
+        description=(
+            "Estimate a customer's lifetime value from their order history over the last `days` "
+            "days. NAIVE v1 methodology: average_order_value * orders_per_month * 12 - a simple "
+            "linear projection that assumes the customer's observed purchase rate continues "
+            "indefinitely, with no churn/dropout modeling. Not a probabilistic model (see "
+            "docs/LTV_ROADMAP.md for the planned BG/NBD + Gamma-Gamma upgrade). Use this for a "
+            "rough 'how much is this customer worth' estimate, not a precise forecast."
+        )
+    )
+    async def estimate_customer_ltv(customer_id: str, days: int = 120) -> dict[str, Any]:
+        try:
+            orders_df, _ = await engine.fetch_order_data(client, days)
+            customer_orders = orders_df[orders_df["customer_id"] == customer_id] if not orders_df.empty else orders_df
+            if customer_orders.empty:
+                return {"error": f"No orders found for customer {customer_id} in the last {days} days."}
+
+            result = rfm.estimate_ltv_naive(customer_orders, days)
+            result["customer_id"] = customer_id
+            result["customer_name"] = customer_orders["customer_name"].iloc[0]
+            return result
         except ShopifyAPIError as e:
             return {"error": str(e)}

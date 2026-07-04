@@ -88,3 +88,64 @@ async def test_abandoned_checkout_report_falls_back_to_drafts(mcp_and_client):
     result = await _call(mcp, "abandoned_checkout_report", min_value=0, days=30)
     assert result["source"] == "open_draft_orders_fallback"
     assert result["count"] == 0
+
+
+def _order_node(order_id: str, customer_id: str, customer_name: str, price: str) -> dict:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "id": order_id,
+        "name": f"#{order_id[-4:]}",
+        "createdAt": now,
+        "displayFinancialStatus": "PAID",
+        "totalPriceSet": {"shopMoney": {"amount": price, "currencyCode": "USD"}},
+        "totalDiscountsSet": {"shopMoney": {"amount": "0.00", "currencyCode": "USD"}},
+        "discountCodes": [],
+        "customer": {"id": customer_id, "displayName": customer_name},
+        "lineItems": {"edges": []},
+    }
+
+
+async def test_segment_customers_tool_returns_segments(mcp_and_client):
+    mcp, client = mcp_and_client
+    orders = {
+        "orders": {
+            "edges": [
+                {"node": _order_node("gid://shopify/Order/1", "gid://shopify/Customer/1", "Ada", "100.00")},
+                {"node": _order_node("gid://shopify/Order/2", "gid://shopify/Customer/2", "Bea", "50.00")},
+            ],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        }
+    }
+    client._http.post = AsyncMock(side_effect=[TOKEN_RESPONSE, gql(orders)])
+
+    result = await _call(mcp, "segment_customers", days=120)
+    assert result["total_customers_analyzed"] == 2
+    assert len(result["customers"]) == 2
+    assert sum(result["segment_counts"].values()) == 2
+
+
+async def test_estimate_customer_ltv_tool(mcp_and_client):
+    mcp, client = mcp_and_client
+    orders = {
+        "orders": {
+            "edges": [
+                {"node": _order_node("gid://shopify/Order/1", "gid://shopify/Customer/1", "Ada", "100.00")},
+            ],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        }
+    }
+    client._http.post = AsyncMock(side_effect=[TOKEN_RESPONSE, gql(orders)])
+
+    result = await _call(mcp, "estimate_customer_ltv", customer_id="gid://shopify/Customer/1", days=120)
+    assert result["customer_id"] == "gid://shopify/Customer/1"
+    assert result["orders_in_window"] == 1
+    assert result["methodology"] == "naive_v1_linear_projection"
+
+
+async def test_estimate_customer_ltv_tool_no_orders_returns_error(mcp_and_client):
+    mcp, client = mcp_and_client
+    orders = {"orders": {"edges": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+    client._http.post = AsyncMock(side_effect=[TOKEN_RESPONSE, gql(orders)])
+
+    result = await _call(mcp, "estimate_customer_ltv", customer_id="gid://shopify/Customer/999", days=120)
+    assert "error" in result

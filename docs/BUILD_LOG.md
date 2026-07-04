@@ -529,3 +529,54 @@ they reflect real cross-task reuse within a warm pass:
 never cached, and which mutations run depends on the agent's own
 non-deterministic choices each pass, e.g. whether a task-solving path
 happens to include an extra discount creation.)
+
+## Phase 9 — `feature/ltv-rfm`: customer segmentation and a naive LTV estimate (2026-07-04)
+
+Two new tools, both real and tested against live data, plus an honest
+roadmap doc for what's deliberately not built yet:
+
+- **`segment_customers`** (`src/neolook/engines/rfm.py`): scores every
+  customer 1-5 on Recency, Frequency, and Monetary value - quintiles
+  relative to this store's own customer base, not fixed thresholds - and
+  maps those scores to a segment label (Champions, Loyal, At-Risk,
+  Hibernating, New, Others) via a simple, documented heuristic.
+- **`estimate_customer_ltv`**: a v1 naive lifetime-value projection
+  (`average_order_value * orders_per_month * 12`). Deliberately simple -
+  see `docs/LTV_ROADMAP.md` for exactly why a real BG/NBD + Gamma-Gamma
+  probabilistic model wasn't built for v1 (this store's ~150 customers
+  over 120 days is too thin a base to fit one meaningfully without
+  producing a falsely precise number).
+
+**One real bug caught by the unit tests before it ever reached live
+data:** the first cut of `_quintile_score` broke ties between customers
+with identical R/F/M values using `Series.rank(method="first")`, which
+assigns tied values sequential ranks based on row order - meaning two
+customers with the exact same order count could land in *different*
+quintile scores purely because of how `groupby` happened to sort their
+customer IDs, with no real signal behind the difference. This isn't a
+rare edge case: order *frequency* in particular is a small integer that
+repeats constantly in real data (lots of customers with exactly 1, 2, or
+3 orders). Fixed by using `pd.qcut(..., duplicates="drop")` on the raw
+values directly, so ties always get the same score - and when a value
+repeats often enough that 5 clean groups genuinely don't exist, fewer
+than 5 distinct scores get used rather than a forced, misleading 5-way
+split.
+
+**Verified live** against the seeded dev store: `segment_customers`
+returned real segment counts across 109 customers with order history in
+the last 120 days (Hibernating: 45, Others: 26, New: 22, Loyal: 16 - no
+Champions or At-Risk in this particular data, which is a real property
+of this store's demo data, not a bug), and `estimate_customer_ltv`
+produced a sensible naive projection for a real repeat customer (27
+orders, $3,480.62 historical spend → $10,441.86 naive 12-month LTV).
+
+Per the spec's honesty requirement, `docs/LTV_ROADMAP.md` documents three
+concrete limitations rather than hiding them: the naive LTV assumes
+purchasing never stops (no churn/dropout modeling), the RFM segment
+boundaries are the standard textbook heuristic rather than backtested
+against this store's actual repeat-purchase behavior, and quintile
+scoring intentionally degrades (fewer distinct scores, or a flat neutral
+score under 5 customers) rather than faking precision the data doesn't
+support. `tests/test_rfm.py` also includes one
+`@pytest.mark.skip("WIP")` test as a placeholder for the planned
+probabilistic LTV model.
