@@ -106,9 +106,22 @@ python scripts/seed_store.py     # populate a dev store with demo data (optional
 python -m pytest tests/ -v       # run the unit test suite
 ```
 
-To use the server with Claude Code or Claude Desktop, register it (stdio
-transport) pointing at `python -m neolook.server` from this project's virtual
-environment.
+To use it with Claude Code, register it from this project's directory:
+
+```bash
+claude mcp add neolook -- .venv/bin/python -m neolook.server
+```
+
+Then just ask Claude to do something Shopify-related ("search my products
+for 'shirt'", "what's my revenue this month?") - it'll find and call the
+right tool. For Claude Desktop, add the same command/args under
+`mcpServers` in its config file instead.
+
+By default the server runs over stdio (one process per client - the normal
+way to use it). Setting `NEOLOOK_TRANSPORT=streamable-http` (plus
+`NEOLOOK_HTTP_PORT`) instead runs it as a standalone long-lived HTTP server
+that multiple clients can share - see "Caching design" below for why the
+eval harness uses this mode.
 
 ## Eval methodology
 
