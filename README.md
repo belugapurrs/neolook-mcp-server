@@ -121,27 +121,35 @@ diffed against a before/after snapshot and cleaned up.
 
 To measure the caching claim honestly, the suite runs **twice** - once with
 `CACHE_ENABLED=false`, once with `CACHE_ENABLED=true` - and compares the
-number of requests actually sent to Shopify in each pass. Because each task
-launches a fresh MCP server subprocess, request counters are persisted to a
-small JSON file across those subprocess restarts so the comparison reflects
-the whole pass, not just one task.
+number of requests actually sent to Shopify in each pass. The server is
+launched **once per pass** over streamable-HTTP, and every task in that
+pass shares that one warm process - the way a real long-lived deployment
+would actually be used - rather than resetting the cache before every
+single task.
 
 **These numbers are pasted in from an actual run, not invented** (see
-`evals/results/eval_20260703T2*.json` and `docs/BUILD_LOG.md` Phase 7 for
-the full story, including three real bugs the harness itself had that
+`evals/results/eval_20260704T*.json` and `docs/BUILD_LOG.md` Phases 7-8 for
+the full story, including several real bugs the harness itself had that
 were found and fixed before trusting these numbers):
 
 | Metric | Result |
 |---|---|
 | Task success rate | 22/24 (91.7%) |
 | Per-category breakdown | discount 3/3 · checkout 3/3 · analytics 9/9 · workflow 7/9 |
-| API traffic reduction from caching | 22.1% |
+| Overall API traffic reduction from caching | 66.0% |
+| Read-only traffic reduction from caching | 76.9% |
 
-The two workflow failures are check-design artifacts, not capability
-gaps: one task's own "if it isn't already" condition was already
-satisfied (correct no-op, but the check still expects the tool to be
-called), and the other was solved via a different but equally valid tool
-sequence than the one check name asserted. See Phase 7 for the details.
+Read-only reduction is reported separately from overall because
+mutations are never cached by design (they always hit the network and
+invalidate the relevant namespace) - blending them into one number would
+dilute the caching-specific claim with calls that were never candidates
+for caching in the first place.
+
+The two workflow failures are check-design artifacts or one-off agent
+nondeterminism, not consistent capability gaps - the exact tasks that
+fail vary somewhat between runs, and each one has been manually
+re-verified live at least once. See `docs/BUILD_LOG.md` Phases 7-8 for
+the full detail on every failure investigated.
 
 ## Caching design
 
@@ -150,9 +158,10 @@ one cache per resource - products/orders/customers/discounts/inventory/
 collections). The cache key is a SHA256 hash of the query text plus its
 variables, so identical requests reuse the same entry. Mutations are never
 cached and instead clear the relevant namespace(s), so a write is always
-immediately reflected in the next read. `ShopifyClient` tracks
-`requests_attempted`, `requests_sent_to_shopify`, and `cache_hits` so the
-traffic-reduction claim is measured, not asserted.
+immediately reflected in the next read. `ShopifyClient` tracks both
+combined (`requests_attempted`/`requests_sent_to_shopify`) and
+read/write-specific (`reads_*`/`writes_*`) counters, plus `cache_hits`, so
+the traffic-reduction claim is measured, not asserted.
 
 ## Rate-limit design
 

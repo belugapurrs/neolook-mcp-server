@@ -453,3 +453,79 @@ isn't perfectly deterministic run to run, so its exact tool-call sequence
 each time. The task success rate landed on the same 22/24 twice in a row
 after the real bugs were fixed, which is what we're reporting as the
 final number.
+
+## Phase 8 — The 22.1% traffic reduction was itself a harness artifact (2026-07-04)
+
+Even after Phase 7's fixes, one more thing didn't add up: each eval task
+still launched a *brand-new* stdio MCP server subprocess (`claude -p`
+spawns one per invocation), so the in-memory cache was stone-cold at the
+start of every single task. Cross-task cache reuse - the whole point of
+running the suite twice - was structurally impossible under that design;
+the only reuse that could ever happen was two identical reads *within* one
+task's own handful of tool calls. The 22.1% figure was real, but it was
+measuring something much narrower than "does caching help this agent."
+
+**Fix 1 - one persistent server per pass, not one per task.** `FastMCP`
+already supports a streamable-HTTP transport (`mcp.run(transport=...)`),
+so `server.py` now accepts `NEOLOOK_TRANSPORT=streamable-http` plus a host/
+port, and the eval harness launches the server exactly *once* per pass -
+all 24 tasks in that pass (each still its own `claude -p` client process)
+connect to that one already-running server over HTTP instead of each
+spawning their own. This is much closer to how the server is actually
+meant to be used: a real agent session, or a real deployment, keeps one
+warm process across many requests rather than restarting it before every
+tool call.
+
+**Fix 2 - report read-only traffic reduction separately from overall.**
+Mutations are never cached by design (`ShopifyClient.mutate()` always
+hits the network and invalidates the relevant namespace - this did not
+change), so folding them into one blended "traffic reduction" number
+dilutes the caching-specific claim with calls that were never candidates
+for caching. `ShopifyClient` now tracks `reads_attempted`/
+`reads_sent_to_shopify` and `writes_attempted`/`writes_sent_to_shopify`
+as separate counters (in addition to the existing combined ones, kept for
+backward compatibility), and the harness reports both
+`traffic_reduction` (overall) and `read_traffic_reduction` (reads only).
+
+**Fix 3 - sanity-checked the cache TTL against real pass duration.** The
+shipped default (`CACHE_TTL_SECONDS=300` in `.env.example`) is a
+reasonable trade-off for normal interactive use, but a full 24-task pass
+takes several minutes of real agent think-and-tool-call time - the final
+run's two passes measured 562s and 451s, both comfortably over 300s. Left
+alone, the default would have silently expired early cache entries before
+later tasks could reuse them, understating the very thing being measured.
+The harness now overrides `CACHE_TTL_SECONDS=3600` for its own server
+process only (`EVAL_CACHE_TTL_SECONDS` in `run_evals.py`) - this does not
+touch the recommended default for normal use - and prints a warning if a
+pass ever runs longer than that override, so this assumption stays
+checked rather than silently trusted.
+
+**Audited that every read path actually goes through the cache:** grepped
+every tool and engine module for calls into `ShopifyClient` - all reads
+go through `client.query()` (cached) and all writes through
+`client.mutate()` (never cached, invalidates on success); there is no
+tool or engine function that calls the underlying `_post_graphql()`
+directly and bypasses the cache.
+
+**Final run, all three Phase 8 fixes in place:** 22/24 (91.7%) again (two
+different workflow tasks failed this time - `workflow-01` and
+`workflow-03` - consistent with the already-documented run-to-run agent
+nondeterminism, and manually re-confirmed live that `create_flash_sale`
+itself works fine, so this wasn't a regression from the transport
+change). The caching numbers are now dramatically more meaningful because
+they reflect real cross-task reuse within a warm pass:
+
+| Metric | Cache off | Cache on |
+|---|---|---|
+| Total requests sent to Shopify | 103 | 35 |
+| Read requests sent to Shopify | 91 | 21 |
+| Write requests sent to Shopify | 12 | 14 |
+| Cache hits | 0 | 61 |
+
+- **Overall traffic reduction: 66.0%**
+- **Read-only traffic reduction: 76.9%**
+
+(Write counts aren't expected to match exactly between passes - they're
+never cached, and which mutations run depends on the agent's own
+non-deterministic choices each pass, e.g. whether a task-solving path
+happens to include an extra discount creation.)

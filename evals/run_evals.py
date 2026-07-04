@@ -4,7 +4,10 @@ agent with the NeoLook MCP server registered, then verifies the resulting
 store state directly via GraphQL (never by trusting the agent's own report
 of what it did). Produces the project's two headline metrics from real
 logs - task success rate and caching-driven API traffic reduction - never
-hardcoded.
+hardcoded. Each pass launches the server exactly once, over streamable-HTTP,
+and every task in that pass shares that one warm process (see start_server /
+docs/BUILD_LOG.md Phase 8) - the way a real long-lived deployment would
+actually be used, rather than resetting the cache before every task.
 
 Requirements to run this for real:
   - The Claude Code CLI (`claude`) installed and on PATH - this is a
@@ -29,6 +32,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -78,21 +82,88 @@ BUILTIN_TOOLS_TO_BLOCK = [
 MAX_TURNS = 15
 SUBPROCESS_TIMEOUT_SECONDS = 180
 
+# --- persistent per-pass server (see docs/BUILD_LOG.md Phase 8) -----------
+#
+# Earlier versions of this harness pointed .mcp.json at a stdio command, so
+# `claude -p` spawned a brand-new neolook server subprocess for every single
+# task - 48 server processes total across both passes, each starting with a
+# stone-cold cache. That makes any *cross-task* caching benefit structurally
+# impossible to observe: a real agent session, or a real deployed server,
+# keeps one warm process across many requests. Now each pass launches the
+# server exactly once, over streamable-HTTP, and all of that pass's tasks
+# (separate `claude -p` client processes) connect to the same running
+# server - the way a real long-lived deployment would actually be used.
+HTTP_HOST = "127.0.0.1"
+PASS_OFF_PORT = 8801
+PASS_ON_PORT = 8802
+SERVER_READY_TIMEOUT_SECONDS = 15
 
-def write_mcp_config(metrics_file: Path | None = None) -> None:
-    """Writes .mcp.json pointing at our server. When metrics_file is set,
-    it's passed through as an env var so the server's ShopifyClient
-    accumulates request/cache counters across the many short-lived
-    subprocesses the eval harness launches (one per task) instead of each
-    one starting from zero - see shopify_client.py's metrics_file param."""
+# A full 24-task pass takes several minutes of real wall-clock time (agent
+# think+tool time, not just network calls). The shipped default cache TTL
+# (300s, see .env.example) is shorter than that, which would silently
+# expire early cache entries before later tasks could ever reuse them and
+# understate the caching benefit this run is trying to measure. This
+# override is scoped to the eval harness's own server process only - it
+# does not change the recommended default for normal use.
+EVAL_CACHE_TTL_SECONDS = 3600
+
+
+async def _wait_for_port(host: str, port: int, timeout: float = SERVER_READY_TIMEOUT_SECONDS) -> None:
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            _, writer = await asyncio.open_connection(host, port)
+            writer.close()
+            await writer.wait_closed()
+            return
+        except OSError as e:
+            last_error = e
+            await asyncio.sleep(0.2)
+    raise RuntimeError(f"neolook server on {host}:{port} never became ready: {last_error}")
+
+
+async def start_server(*, cache_enabled: bool, metrics_file: Path, port: int) -> asyncio.subprocess.Process:
+    """Launches the neolook MCP server as one long-lived HTTP process that
+    every task in this pass will share, instead of a fresh stdio subprocess
+    per task."""
     python_bin = REPO_ROOT / ".venv" / "bin" / "python"
-    env = {"NEOLOOK_METRICS_FILE": str(metrics_file)} if metrics_file else {}
+    env = {
+        **os.environ,
+        "NEOLOOK_TRANSPORT": "streamable-http",
+        "NEOLOOK_HTTP_HOST": HTTP_HOST,
+        "NEOLOOK_HTTP_PORT": str(port),
+        "NEOLOOK_METRICS_FILE": str(metrics_file),
+        "CACHE_ENABLED": "true" if cache_enabled else "false",
+        "CACHE_TTL_SECONDS": str(EVAL_CACHE_TTL_SECONDS),
+    }
+    proc = await asyncio.create_subprocess_exec(
+        str(python_bin), "-m", "neolook.server",
+        cwd=str(REPO_ROOT), env=env,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )
+    await _wait_for_port(HTTP_HOST, port)
+    return proc
+
+
+async def stop_server(proc: asyncio.subprocess.Process) -> None:
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+
+
+def write_mcp_config(port: int) -> None:
+    """Points .mcp.json at the already-running persistent HTTP server for
+    this pass (see start_server), not a stdio command that `claude -p`
+    would spawn fresh itself."""
     config = {
         "mcpServers": {
             "neolook": {
-                "command": str(python_bin),
-                "args": ["-m", "neolook.server"],
-                "env": env,
+                "type": "http",
+                "url": f"http://{HTTP_HOST}:{port}/mcp",
             }
         }
     }
@@ -408,14 +479,29 @@ async def run_suite(client: ShopifyClient, tasks: list[dict]) -> list[dict]:
     return results
 
 
+_METRICS_FIELDS = (
+    "requests_attempted", "requests_sent_to_shopify",
+    "reads_attempted", "reads_sent_to_shopify",
+    "writes_attempted", "writes_sent_to_shopify",
+    "cache_hits", "throttle_events",
+)
+
+
 def _read_metrics_file(path: Path) -> dict[str, Any]:
-    """Raw counters only (requests_attempted/requests_sent_to_shopify/
-    cache_hits/throttle_events) - no derived hit-rate here, since
+    """Raw counters only - no derived hit-rate here, since
     requests_sent_to_shopify mixes cache-missed reads with mutations (which
     are never cached), so a hits/(hits+sent) ratio would be misleading."""
+    empty = {field: 0 for field in _METRICS_FIELDS}
     if not path.exists():
-        return {"requests_attempted": 0, "requests_sent_to_shopify": 0, "cache_hits": 0, "throttle_events": 0}
-    return json.loads(path.read_text())
+        return empty
+    return {**empty, **json.loads(path.read_text())}
+
+
+def _safe_reduction(off: int, on: int) -> float | None:
+    """1 - on/off, or None if there's no baseline to compare against."""
+    if not off:
+        return None
+    return round(1 - (on / off), 4)
 
 
 async def main() -> None:
@@ -431,47 +517,72 @@ async def main() -> None:
     RESULTS_DIR.mkdir(exist_ok=True)
     # Used only for our own verification queries (snapshot_state, checks) -
     # NOT the metric of interest. The agent's actual tool-call traffic is
-    # tracked separately via the metrics_file mechanism below, because each
-    # task launches a fresh MCP server subprocess whose in-memory client
-    # would otherwise reset to zero every time (see docs/BUILD_LOG.md).
+    # tracked separately via the metrics_file mechanism below, written by
+    # the persistent per-pass server process (see start_server/Phase 8).
     # cache_enabled=False is required here: this one instance is reused
-    # across all tasks in both passes, and the agent's mutations happen in a
-    # separate subprocess that can never invalidate this client's cache. A
-    # cached snapshot would silently go stale for up to CACHE_TTL_SECONDS,
-    # making every diff-based check (new checkout links, new collections)
-    # fail regardless of what the agent actually did.
+    # across all tasks in both passes, and the agent's mutations happen in
+    # the separate server process that can never invalidate this client's
+    # cache. A cached snapshot would silently go stale for up to
+    # CACHE_TTL_SECONDS, making every diff-based check (new checkout links,
+    # new collections) fail regardless of what the agent actually did.
     verification_client = ShopifyClient(cache_enabled=False)
 
     if args.skip_cache_comparison:
         metrics_file = RESULTS_DIR / ".metrics_single_pass.json"
         metrics_file.unlink(missing_ok=True)
-        write_mcp_config(metrics_file)
-        results = await run_suite(verification_client, tasks)
+        cache_enabled = os.environ.get("CACHE_ENABLED", "true").lower() == "true"
+        server = await start_server(cache_enabled=cache_enabled, metrics_file=metrics_file, port=PASS_ON_PORT)
+        write_mcp_config(PASS_ON_PORT)
+        try:
+            results = await run_suite(verification_client, tasks)
+        finally:
+            await stop_server(server)
         metrics = {"agent_tool_traffic": _read_metrics_file(metrics_file)}
         traffic_reduction = None
+        read_traffic_reduction = None
     else:
         metrics_off_file = RESULTS_DIR / ".metrics_cache_off.json"
         metrics_on_file = RESULTS_DIR / ".metrics_cache_on.json"
         metrics_off_file.unlink(missing_ok=True)
         metrics_on_file.unlink(missing_ok=True)
 
-        os.environ["CACHE_ENABLED"] = "false"
-        write_mcp_config(metrics_off_file)
         console.print("\n[bold]--- Pass 1: cache disabled ---[/bold]")
-        results = await run_suite(verification_client, tasks)
+        pass1_start = time.monotonic()
+        server_off = await start_server(cache_enabled=False, metrics_file=metrics_off_file, port=PASS_OFF_PORT)
+        write_mcp_config(PASS_OFF_PORT)
+        try:
+            results = await run_suite(verification_client, tasks)
+        finally:
+            await stop_server(server_off)
+        pass1_duration = time.monotonic() - pass1_start
         metrics_off = _read_metrics_file(metrics_off_file)
 
-        os.environ["CACHE_ENABLED"] = "true"
-        write_mcp_config(metrics_on_file)
         console.print("\n[bold]--- Pass 2: cache enabled ---[/bold]")
-        await run_suite(verification_client, tasks)
+        pass2_start = time.monotonic()
+        server_on = await start_server(cache_enabled=True, metrics_file=metrics_on_file, port=PASS_ON_PORT)
+        write_mcp_config(PASS_ON_PORT)
+        try:
+            await run_suite(verification_client, tasks)
+        finally:
+            await stop_server(server_on)
+        pass2_duration = time.monotonic() - pass2_start
         metrics_on = _read_metrics_file(metrics_on_file)
 
-        metrics = {"cache_disabled": metrics_off, "cache_enabled": metrics_on}
-        if metrics_off["requests_sent_to_shopify"]:
-            traffic_reduction = round(1 - (metrics_on["requests_sent_to_shopify"] / metrics_off["requests_sent_to_shopify"]), 4)
-        else:
-            traffic_reduction = None
+        metrics = {
+            "cache_disabled": metrics_off,
+            "cache_enabled": metrics_on,
+            "pass_durations_seconds": {"cache_disabled": round(pass1_duration, 1), "cache_enabled": round(pass2_duration, 1)},
+            "cache_ttl_seconds_used": EVAL_CACHE_TTL_SECONDS,
+        }
+        traffic_reduction = _safe_reduction(metrics_off["requests_sent_to_shopify"], metrics_on["requests_sent_to_shopify"])
+        read_traffic_reduction = _safe_reduction(metrics_off["reads_sent_to_shopify"], metrics_on["reads_sent_to_shopify"])
+
+        if pass2_duration > EVAL_CACHE_TTL_SECONDS:
+            console.print(
+                f"[yellow]Warning: pass 2 took {pass2_duration:.0f}s, longer than the "
+                f"{EVAL_CACHE_TTL_SECONDS}s cache TTL this run used - some early cache "
+                f"entries may have expired before later tasks could reuse them.[/yellow]"
+            )
 
     await verification_client.aclose()
 
@@ -483,6 +594,7 @@ async def main() -> None:
         "results": results,
         "metrics": metrics,
         "traffic_reduction": traffic_reduction,
+        "read_traffic_reduction": read_traffic_reduction,
     }
     (RESULTS_DIR / f"eval_{timestamp}.json").write_text(json.dumps(output, indent=2, default=str))
 
@@ -495,9 +607,11 @@ async def main() -> None:
     console.print(table)
 
     reduction_str = f"{traffic_reduction * 100:.1f}%" if traffic_reduction is not None else "N/A"
+    read_reduction_str = f"{read_traffic_reduction * 100:.1f}%" if read_traffic_reduction is not None else "N/A"
     console.print(
         f"\n[bold]Task success: {summary['passed']}/{summary['total']} "
-        f"({summary['success_rate'] * 100:.1f}%) · API traffic reduction: {reduction_str}[/bold]"
+        f"({summary['success_rate'] * 100:.1f}%) · Overall API traffic reduction: {reduction_str} "
+        f"· Read-only traffic reduction: {read_reduction_str}[/bold]"
     )
 
 

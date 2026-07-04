@@ -65,8 +65,18 @@ class ShopifyClient:
         # cumulative totals survive across separate short-lived processes
         # (e.g. one MCP server subprocess launched per eval task) instead of
         # resetting to zero each time - see get_metrics()/_persist_metrics().
+        #
+        # Reads and writes are tracked separately (not just combined into
+        # requests_attempted/requests_sent_to_shopify) because mutations are
+        # never cached and always hit the network - mixing them into one
+        # "traffic reduction" number dilutes the caching-specific claim with
+        # writes that were never candidates for caching in the first place.
         self.requests_attempted = 0
         self.requests_sent_to_shopify = 0
+        self.reads_attempted = 0
+        self.reads_sent_to_shopify = 0
+        self.writes_attempted = 0
+        self.writes_sent_to_shopify = 0
         self.throttle_events = 0
         self.metrics_file = Path(metrics_file) if metrics_file else None
         self._metrics_baseline = self._load_metrics_baseline()
@@ -74,8 +84,15 @@ class ShopifyClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
+    _METRICS_FIELDS = (
+        "requests_attempted", "requests_sent_to_shopify",
+        "reads_attempted", "reads_sent_to_shopify",
+        "writes_attempted", "writes_sent_to_shopify",
+        "cache_hits", "throttle_events",
+    )
+
     def _load_metrics_baseline(self) -> dict[str, int]:
-        empty = {"requests_attempted": 0, "requests_sent_to_shopify": 0, "cache_hits": 0, "throttle_events": 0}
+        empty = {field: 0 for field in self._METRICS_FIELDS}
         if not self.metrics_file or not self.metrics_file.exists():
             return empty
         try:
@@ -89,6 +106,10 @@ class ShopifyClient:
         combined = {
             "requests_attempted": self._metrics_baseline["requests_attempted"] + self.requests_attempted,
             "requests_sent_to_shopify": self._metrics_baseline["requests_sent_to_shopify"] + self.requests_sent_to_shopify,
+            "reads_attempted": self._metrics_baseline["reads_attempted"] + self.reads_attempted,
+            "reads_sent_to_shopify": self._metrics_baseline["reads_sent_to_shopify"] + self.reads_sent_to_shopify,
+            "writes_attempted": self._metrics_baseline["writes_attempted"] + self.writes_attempted,
+            "writes_sent_to_shopify": self._metrics_baseline["writes_sent_to_shopify"] + self.writes_sent_to_shopify,
             "cache_hits": self._metrics_baseline["cache_hits"] + self.cache.hits,
             "throttle_events": self._metrics_baseline["throttle_events"] + self.throttle_events,
         }
@@ -204,6 +225,7 @@ class ShopifyClient:
     ) -> dict[str, Any]:
         """Run a read-only GraphQL query, served from cache when possible."""
         self.requests_attempted += 1
+        self.reads_attempted += 1
         cache_key = make_cache_key(query, variables)
 
         cached = self.cache.get(namespace, cache_key)
@@ -212,6 +234,7 @@ class ShopifyClient:
             return cached
 
         self.requests_sent_to_shopify += 1
+        self.reads_sent_to_shopify += 1
         body = await self._post_graphql(query, variables)
         self.cache.set(namespace, cache_key, body)
         self._persist_metrics()
@@ -227,6 +250,8 @@ class ShopifyClient:
         namespaces afterward so subsequent reads see fresh data."""
         self.requests_attempted += 1
         self.requests_sent_to_shopify += 1
+        self.writes_attempted += 1
+        self.writes_sent_to_shopify += 1
         body = await self._post_graphql(mutation, variables)
         for namespace in invalidate_namespaces or []:
             self.cache.clear_namespace(namespace)
@@ -239,12 +264,20 @@ class ShopifyClient:
         cache_hits = self._metrics_baseline["cache_hits"] + self.cache.hits
         requests_attempted = self._metrics_baseline["requests_attempted"] + self.requests_attempted
         requests_sent_to_shopify = self._metrics_baseline["requests_sent_to_shopify"] + self.requests_sent_to_shopify
+        reads_attempted = self._metrics_baseline["reads_attempted"] + self.reads_attempted
+        reads_sent_to_shopify = self._metrics_baseline["reads_sent_to_shopify"] + self.reads_sent_to_shopify
+        writes_attempted = self._metrics_baseline["writes_attempted"] + self.writes_attempted
+        writes_sent_to_shopify = self._metrics_baseline["writes_sent_to_shopify"] + self.writes_sent_to_shopify
         throttle_events = self._metrics_baseline["throttle_events"] + self.throttle_events
         total_reads = cache_hits + self.cache.misses
         hit_rate = cache_hits / total_reads if total_reads else 0.0
         return {
             "requests_attempted": requests_attempted,
             "requests_sent_to_shopify": requests_sent_to_shopify,
+            "reads_attempted": reads_attempted,
+            "reads_sent_to_shopify": reads_sent_to_shopify,
+            "writes_attempted": writes_attempted,
+            "writes_sent_to_shopify": writes_sent_to_shopify,
             "cache_hits": cache_hits,
             "cache_hit_rate": round(hit_rate, 4),
             "throttle_events": throttle_events,

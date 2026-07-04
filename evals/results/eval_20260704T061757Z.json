@@ -1,5 +1,5 @@
 {
-  "timestamp": "20260703T194901Z",
+  "timestamp": "20260704T061757Z",
   "summary": {
     "total": 24,
     "passed": 22,
@@ -256,23 +256,23 @@
     {
       "id": "workflow-01",
       "category": "workflow",
-      "passed": true,
+      "passed": false,
       "checks": [
         {
           "check": {
             "type": "collection_exists_with_products",
             "min_products": 5
           },
-          "passed": true,
-          "detail": "OK"
+          "passed": false,
+          "detail": "No new collection with >= 5 products found among []"
         },
         {
           "check": {
             "type": "discount_exists_scoped_to_collection",
             "percentage": 20
           },
-          "passed": true,
-          "detail": "OK"
+          "passed": false,
+          "detail": "No new collection-scoped discount at 20% found among []"
         }
       ]
     },
@@ -416,15 +416,15 @@
     {
       "id": "workflow-09",
       "category": "workflow",
-      "passed": false,
+      "passed": true,
       "checks": [
         {
           "check": {
             "type": "tool_called",
             "tool": "recover_abandoned_carts"
           },
-          "passed": false,
-          "detail": "Tool mcp__neolook__recover_abandoned_carts was not called (called: ['ToolSearch', 'mcp__neolook__abandoned_checkout_report', 'mcp__neolook__create_checkout_link', 'mcp__neolook__create_discount', 'mcp__neolook__search_products'])"
+          "passed": true,
+          "detail": "OK"
         },
         {
           "check": {
@@ -439,17 +439,31 @@
   ],
   "metrics": {
     "cache_disabled": {
-      "requests_attempted": 104,
-      "requests_sent_to_shopify": 104,
+      "requests_attempted": 103,
+      "requests_sent_to_shopify": 103,
+      "reads_attempted": 91,
+      "reads_sent_to_shopify": 91,
+      "writes_attempted": 12,
+      "writes_sent_to_shopify": 12,
       "cache_hits": 0,
       "throttle_events": 0
     },
     "cache_enabled": {
-      "requests_attempted": 103,
-      "requests_sent_to_shopify": 81,
-      "cache_hits": 22,
+      "requests_attempted": 96,
+      "requests_sent_to_shopify": 35,
+      "reads_attempted": 82,
+      "reads_sent_to_shopify": 21,
+      "writes_attempted": 14,
+      "writes_sent_to_shopify": 14,
+      "cache_hits": 61,
       "throttle_events": 0
-    }
+    },
+    "pass_durations_seconds": {
+      "cache_disabled": 562.1,
+      "cache_enabled": 451.0
+    },
+    "cache_ttl_seconds_used": 3600
   },
-  "traffic_reduction": 0.2212
+  "traffic_reduction": 0.6602,
+  "read_traffic_reduction": 0.7692
 }
