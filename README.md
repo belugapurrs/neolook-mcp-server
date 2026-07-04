@@ -93,7 +93,7 @@ flowchart TD
 ## Quickstart
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/belugapurrs/my_first_project.git
 cd neolook-mcp-server
 python3 -m venv .venv
 source .venv/bin/activate
