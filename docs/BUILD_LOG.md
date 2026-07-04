@@ -529,3 +529,51 @@ they reflect real cross-task reuse within a warm pass:
 never cached, and which mutations run depends on the agent's own
 non-deterministic choices each pass, e.g. whether a task-solving path
 happens to include an extra discount creation.)
+
+## Phase 10 — Deploying it as a claude.ai custom connector (2026-07-05)
+
+Everything so far ran on the user's own laptop. Using this server from
+claude.ai (as opposed to Claude Code/Desktop, which launch it locally
+themselves) needs a URL reachable from the public internet - `127.0.0.1`
+obviously isn't one.
+
+**Checked the actual claude.ai docs rather than guessing:** custom remote
+MCP connectors are only documented as supporting OAuth (either a full
+OAuth flow, or an OAuth Client ID/Secret entered in "Advanced settings") -
+there's no documented support for a simple bearer token or custom header.
+Building a real OAuth authorization server (the `mcp` SDK does have the
+scaffolding for it - `auth_server_provider`/`token_verifier` on
+`FastMCP`) is substantial extra scope for a project connecting to a
+sandbox dev store with no real customer data. Went with a deliberately
+simpler, honestly-documented tradeoff instead: since claude.ai's "Add
+custom connector" field just takes a URL string, a shared secret can
+travel *in that URL itself* as a query parameter
+(`https://host/mcp?key=...`) - no dependency on claude.ai supporting
+custom headers, no OAuth server to build. `server.py` now builds the
+Starlette app via `FastMCP.streamable_http_app()` and wraps it in a small
+`SharedSecretMiddleware` that 401s any request whose `key` query param
+doesn't match `NEOLOOK_CONNECTOR_SECRET` (checked with `hmac.compare_digest`
+to avoid a timing side-channel), then runs it with `uvicorn.run()`
+directly instead of `mcp.run()`. When the env var isn't set (local dev,
+the eval harness), the app runs unwrapped exactly as before - confirmed
+the eval harness's dry run still passes with this change.
+
+Also made the port cloud-friendly: `main()` now checks the standard `PORT`
+env var (which Render, Heroku, etc. set automatically) before falling
+back to `NEOLOOK_HTTP_PORT`, and the deploy config binds
+`NEOLOOK_HTTP_HOST=0.0.0.0` instead of the safer `127.0.0.1` default used
+for local runs.
+
+**Hosting:** added `render.yaml` (a Render "Blueprint") rather than
+manual dashboard clicking for every field - Render reads it straight from
+the repo and pre-fills the service, only prompting the user for the
+three secrets that must never be committed to git
+(`SHOPIFY_STORE_DOMAIN`/`SHOPIFY_CLIENT_ID`/`SHOPIFY_CLIENT_SECRET`).
+`NEOLOOK_CONNECTOR_SECRET` uses Render's `generateValue: true`, so Render
+itself generates a random 256-bit secret rather than the user (or Claude)
+inventing one. Chose Render's free web-service tier for zero cost,
+consistent with the project's standing "never spend real money" rule -
+the honest tradeoff documented for the user is that free-tier services
+sleep after 15 minutes of inactivity, so the first tool call after a
+quiet period will be slower (cold start) while Render spins the container
+back up.

@@ -123,6 +123,33 @@ way to use it). Setting `NEOLOOK_TRANSPORT=streamable-http` (plus
 that multiple clients can share - see "Caching design" below for why the
 eval harness uses this mode.
 
+### Using it as a claude.ai custom connector
+
+claude.ai/Desktop's Connectors settings need a URL reachable from the
+public internet, not `localhost`, so this requires an actual deployment:
+
+1. On [Render](https://render.com), choose **New > Blueprint** and point
+   it at this repo - it reads `render.yaml` and pre-fills everything.
+2. Render will prompt you for the three Shopify secrets (from your `.env`)
+   - it generates `NEOLOOK_CONNECTOR_SECRET` for you automatically.
+3. Once deployed, your connector URL is
+   `https://<your-service>.onrender.com/mcp?key=<the generated secret,
+   from Render's dashboard env var settings>`.
+4. In claude.ai: **Customize > Connectors > Add custom connector**, paste
+   that full URL (including `?key=...`) in.
+
+claude.ai's custom-connector UI only documents OAuth for authenticating a
+remote server. Building a full OAuth authorization server was judged out
+of scope for a demo project connecting to a sandbox dev store with no
+real customer data - instead, the secret above travels as a query
+parameter on the URL itself and every request is checked against it
+(`SharedSecretMiddleware` in `server.py`, see `docs/BUILD_LOG.md` Phase
+10 for the full reasoning). This is a deliberately simple, honestly-
+documented tradeoff, not a claim of OAuth-grade security - don't point
+this at a store with real customer/payment data without a stronger auth
+layer. Render's free tier also sleeps after 15 minutes idle, so the first
+call after a quiet period will be slower while it wakes back up.
+
 ## Eval methodology
 
 `evals/run_evals.py` runs each of the 24 tasks in `evals/tasks.yaml` through a

@@ -1,0 +1,29 @@
+services:
+  - name: neolook-mcp-server
+    type: web
+    runtime: python
+    plan: free
+    buildCommand: pip install -e .
+    startCommand: python -m neolook.server
+    envVars:
+      - key: NEOLOOK_TRANSPORT
+        value: streamable-http
+      - key: NEOLOOK_HTTP_HOST
+        value: 0.0.0.0
+      - key: SHOPIFY_API_VERSION
+        value: "2026-04"
+      - key: CACHE_TTL_SECONDS
+        value: "300"
+      - key: CACHE_ENABLED
+        value: "true"
+      # Filled in by you during the Blueprint setup - never committed to git.
+      - key: SHOPIFY_STORE_DOMAIN
+        sync: false
+      - key: SHOPIFY_CLIENT_ID
+        sync: false
+      - key: SHOPIFY_CLIENT_SECRET
+        sync: false
+      # Render generates a random value for this one automatically - see
+      # NEOLOOK_CONNECTOR_SECRET in src/neolook/server.py for what it's for.
+      - key: NEOLOOK_CONNECTOR_SECRET
+        generateValue: true
