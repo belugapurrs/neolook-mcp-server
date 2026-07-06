@@ -577,3 +577,29 @@ the honest tradeoff documented for the user is that free-tier services
 sleep after 15 minutes of inactivity, so the first tool call after a
 quiet period will be slower (cold start) while Render spins the container
 back up.
+
+## Phase 10.5 — Actually using the FastAPI dependency (2026-07-06)
+
+`pyproject.toml` had listed `fastapi` as a dependency since the very
+first scaffolding pass, but nothing ever imported it - the HTTP transport
+work in Phase 10 wrapped FastMCP's own Starlette app directly instead.
+Fixed by mounting FastMCP's streamable-HTTP app inside an actual `FastAPI`
+app and moving `SharedSecretMiddleware` onto it as ordinary FastAPI
+middleware (`@app.middleware("http")`), rather than hand-wrapping the
+Starlette app with a bespoke `BaseHTTPMiddleware` subclass.
+
+**One real wiring detail that would have silently broken the mounted
+app:** a mounted sub-app's own lifespan doesn't run automatically just
+because it's mounted - `FastMCP`'s streamable-HTTP transport depends on
+its `session_manager` being started (it owns the request/response
+plumbing for the whole transport), so the parent `FastAPI` app's own
+`lifespan` has to explicitly enter `mcp.session_manager.run()` around the
+`yield`. This is exactly the pattern the SDK itself documents on
+`FastMCP.session_manager`'s docstring ("exposed to enable... mounting
+multiple FastMCP servers in a single FastAPI application"), so it wasn't
+guessed - confirmed against the SDK source before writing it. Verified
+live: unauthenticated and wrong-secret requests both still 401, a
+correctly-keyed request gets a real MCP `initialize` response with
+`streamable_http_manager: session manager started` in the logs, and the
+eval harness's own no-secret HTTP path (used every run) still passes a
+dry run cleanly with this change.

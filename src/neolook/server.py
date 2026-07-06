@@ -21,19 +21,24 @@ connector URL, e.g. `https://host/mcp?key=...`) or gets a 401 - a
 deliberately simple, documented tradeoff, not a claim of real OAuth-grade
 security. Unset for local/eval use, where the network boundary itself
 (localhost, or a private tunnel) is the actual protection.
+
+For the HTTP transport, FastMCP's own streamable-HTTP Starlette app is
+mounted inside a FastAPI app (rather than run standalone), and the
+shared-secret check is ordinary FastAPI middleware - the pattern FastMCP
+itself documents for "mounting multiple FastMCP servers in a single
+FastAPI application" (see FastMCP.session_manager's docstring).
 """
 
+import contextlib
 import hmac
 import os
-from typing import Literal, cast
+from typing import AsyncIterator, Literal, cast
 
 import uvicorn
 from dotenv import load_dotenv
+from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse
 from mcp.server.fastmcp import FastMCP
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import PlainTextResponse
-from starlette.types import ASGIApp
 
 from neolook.shopify_client import ShopifyClient
 from neolook.tools import agentic, analytics, crud
@@ -59,20 +64,32 @@ analytics.register(mcp, _client)
 agentic.register(mcp, _client)
 
 
-class SharedSecretMiddleware(BaseHTTPMiddleware):
-    """Rejects any request whose `key` query parameter doesn't match
-    NEOLOOK_CONNECTOR_SECRET. See module docstring for why this exists
-    instead of real OAuth."""
+def _build_fastapi_app() -> FastAPI:
+    """Mounts FastMCP's streamable-HTTP app inside a FastAPI app."""
+    mcp_app = mcp.streamable_http_app()
 
-    def __init__(self, app: ASGIApp, secret: str) -> None:
-        super().__init__(app)
-        self._secret = secret
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # FastMCP's session manager owns the streamable-HTTP transport's
+        # request/response plumbing and must be running for the mounted
+        # app to work at all - mounting alone doesn't start it, since a
+        # sub-app's own lifespan isn't invoked automatically by its parent.
+        async with mcp.session_manager.run():
+            yield
 
-    async def dispatch(self, request: Request, call_next):
-        provided = request.query_params.get("key", "")
-        if not hmac.compare_digest(provided, self._secret):
-            return PlainTextResponse("Unauthorized", status_code=401)
-        return await call_next(request)
+    app = FastAPI(lifespan=lifespan)
+    app.mount("/", mcp_app)
+
+    secret = os.environ.get("NEOLOOK_CONNECTOR_SECRET")
+    if secret:
+        @app.middleware("http")
+        async def _require_shared_secret(request: Request, call_next):
+            provided = request.query_params.get("key", "")
+            if not hmac.compare_digest(provided, secret):
+                return PlainTextResponse("Unauthorized", status_code=401)
+            return await call_next(request)
+
+    return app
 
 
 def main() -> None:
@@ -80,10 +97,7 @@ def main() -> None:
         mcp.run(transport=_transport)
         return
 
-    app = mcp.streamable_http_app()
-    secret = os.environ.get("NEOLOOK_CONNECTOR_SECRET")
-    if secret:
-        app = SharedSecretMiddleware(app, secret)
+    app = _build_fastapi_app()
 
     # Cloud platforms (Render, Heroku, etc.) assign a port via $PORT and
     # expect the app to bind 0.0.0.0; NEOLOOK_HTTP_PORT/HOST remain the
